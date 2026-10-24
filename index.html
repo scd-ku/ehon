@@ -6034,6 +6034,11 @@ saveLogBtn.onclick = () => {
       peer.on('error',e=>{
         console.error('共有接続エラー',e);
         status(sendStatus,'接続できませんでした。ネットワークを確認し、共有を終了して再試行してください。');
+        // 未確立のIDを持つ古い Peer が残らないように後始末
+        if(sourcePeer===peer && !sourceUrl){
+          try{peer.destroy()}catch(_){}
+          sourcePeer=null;sourceJson=null;
+        }
       });
       peer.on('disconnected',()=>{
         status(sendStatus,'接続サーバーと切断されました。共有を終了してから再試行してください。');
@@ -6066,6 +6071,8 @@ saveLogBtn.onclick = () => {
       receivedText=text;
       receivedFilename=/^ehon_[a-z0-9-]+\.ehon$/i.test(filename||'')?filename:'shared_ehon.ehon';
       saveBtn.disabled=false;openBtn.disabled=false;playBtn.disabled=false;
+      receiving=false; // 正常受信後の接続終了をエラーとして扱わない
+      beginBtn.disabled=false;
       receiveStatus.classList.add('book-share-success');
       status(receiveStatus,'受信完了！ '+data.pages.length+'ページを受け取りました。「端末に保存」しておくと、後日も読み聞かせできます。');
       try{receiverConn?.send({t:'complete'})}catch(_){}
