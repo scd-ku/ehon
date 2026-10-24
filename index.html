@@ -1276,6 +1276,7 @@ function pinchMidpoint(touches){
 function beginPinch(e){
   if(e.touches.length!==2||isPinching)return;
   cancelTouchLongPress(); // 2本指になった時点で長押しを無効化
+  touchLongPressConsumed=false;
   // One-finger stroke started just before the second finger: discard its
   // unfinished preview rather than leave a stray dot or moved object.
   if(isDraw){
@@ -3514,6 +3515,7 @@ function canvasUp(e){
 const LONG_PRESS_DELAY=520;
 const LONG_PRESS_MOVE_PX=9;
 let pendingCanvasTouch=null;
+let touchLongPressConsumed=false;
 let lastCanvasLongPressAt=0;
 function cancelTouchLongPress(){
   if(!pendingCanvasTouch)return;
@@ -3530,6 +3532,7 @@ function canvasTouchStart(e){
     cancelTouchLongPress();e.preventDefault();return;
   }
   const t=e.touches[0];
+  touchLongPressConsumed=false;
   if(t.touchType==='stylus'){canvasDown(e);return;} // Apple Pencil は即時
   cancelTouchLongPress();
   const pending={identifier:t.identifier,x:t.clientX,y:t.clientY,
@@ -3538,12 +3541,14 @@ function canvasTouchStart(e){
   pending.timer=setTimeout(()=>{
     if(pendingCanvasTouch!==pending||isPinching)return;
     pendingCanvasTouch=null;
+    touchLongPressConsumed=true;
     lastCanvasLongPressAt=Date.now();
     openCanvasContextMenu(pending.x,pending.y);
   },LONG_PRESS_DELAY);
   e.preventDefault();
 }
 function canvasTouchMove(e){
+  if(touchLongPressConsumed){e.preventDefault();return;}
   if(isPinching||e.touches.length!==1){cancelTouchLongPress();return;}
   const p=pendingCanvasTouch;
   if(p){
@@ -3559,6 +3564,11 @@ function canvasTouchMove(e){
   e.preventDefault();
 }
 function canvasTouchEnd(e){
+  if(touchLongPressConsumed){
+    touchLongPressConsumed=false;
+    e.preventDefault();
+    return;
+  }
   if(isPinching){cancelTouchLongPress();return;}
   const p=pendingCanvasTouch;
   if(p){
@@ -3569,7 +3579,7 @@ function canvasTouchEnd(e){
   canvasUp(e);e.preventDefault();
 }
 function canvasTouchCancel(e){
-  cancelTouchLongPress();
+  cancelTouchLongPress();touchLongPressConsumed=false;
   if(strokeActive){restorePaintToBase();cancelStrokeCapture();}
   isDraw=false;isPanning=false;action=null;isStampDrawing=false;
   e.preventDefault();
