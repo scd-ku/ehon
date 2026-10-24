@@ -1757,8 +1757,7 @@ timelineCvs.addEventListener('touchmove', tlMove,{passive:false});
 timelineCvs.addEventListener('touchend',  tlUp,{passive:false});
 timelineCvs.addEventListener('touchcancel',tlUp,{passive:false});
 
-// ★ タイムラインが使えるようになってからレイアウトを呼ぶ
-layoutStage();
+// ページデータの初期化後に初期レイアウトを実行する（TDZエラー防止）
 window.addEventListener('resize', layoutStage);
 /* ========= 紙の質感＋真ん中だけ折り目 ========= */
 function rr(ctx,x,y,w,h,r){
@@ -2018,6 +2017,8 @@ function newSpread(type='normal'){
 
 let spreads=[newSpread('cover'), newSpread('normal'), newSpread('back')];
 let cur=0;
+// 音声トラックも spreads[cur] を参照するため、初期化完了後に描画する。
+layoutStage();
 
 /* ★ 見開きごとのUndo用履歴（直近20ステップ） */
 const historyMap = new WeakMap();
