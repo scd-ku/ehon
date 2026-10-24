@@ -850,7 +850,7 @@ canvas{display:block;touch-action:none}
     </button>
 
     <!-- 中央：タイムライン本体 -->
-    <canvas id="timeline" height="48"></canvas>
+    <canvas id="timeline" height="78" role="img" aria-label="このページの操作タイムラインと録音の有無"></canvas>
 
     <!-- 右側：ログ保存ボタン（小さめ） -->
     <button id="saveLog" class="btn icon timelineBtn"
@@ -1346,7 +1346,7 @@ function layoutTimeline(){
   const rect = stage.getBoundingClientRect();
   if (!rect.width) return;
   timelineCvs.width  = Math.max(200, rect.width - 40);
-  timelineCvs.height = 48;
+  timelineCvs.height = 78;
   drawTimeline();
 }
 
@@ -1613,6 +1613,43 @@ function drawTimeline(){
     ctx.fill();
   }
 
+  // 描画・操作マーカーとは区別して、下段に音声の有無を表示する。
+  drawTimelineAudioTrack(ctx,w);
+}
+
+/** 現在の見開きの音声状態をタイムライン内の独立したトラックに描く。 */
+function drawTimelineAudioTrack(ctx,w){
+  const sp=spreads[cur];
+  if(!sp)return;
+  const state=document.getElementById('audioPageStatus')?.dataset.state;
+  const recording=state==='recording';
+  const recorded=!!(sp.audioBlob&&sp.audioURL);
+  const x=24, y=47, trackW=Math.max(0,w-48), trackH=25;
+  if(trackW<1)return;
+  const color=recording?'#b73535':recorded?'#25785e':'#74818b';
+  ctx.save();
+  ctx.fillStyle=recording?'#fff0ee':recorded?'#e8f5ee':'#f0f2f4';
+  ctx.fillRect(x,y,trackW,trackH);
+  ctx.fillStyle=color;
+  ctx.fillRect(x,y,3,trackH);
+  ctx.font='12px system-ui,-apple-system,sans-serif';
+  ctx.textAlign='left';
+  ctx.textBaseline='middle';
+  ctx.fillText('♪',x+11,y+trackH/2+0.5);
+  const label=recording?(recorded?'録音中（以前の音声あり）':'録音中'):recorded?'音声あり':'音声なし';
+  ctx.fillText(label,x+30,y+trackH/2+0.5);
+  if(recorded && !recording && trackW>=255){
+    ctx.textAlign='right';
+    ctx.fillText('ページの0秒から再生',x+trackW-10,y+trackH/2+0.5);
+  }
+  ctx.restore();
+  const hint=recording
+    ?'このページは現在録音中です。'
+    :recorded
+      ?'このページには録音があります。読み聞かせではページの0秒から音声を再生します。'
+      :'このページには録音がありません。';
+  timelineCvs.title=hint;
+  timelineCvs.setAttribute('aria-label','このページの操作タイムライン。'+hint);
 }
 
 // タイムラインの座標
@@ -4075,6 +4112,8 @@ function updatePageAudioControls(){
   const state=thisPage?'recording':has?'recorded':'empty';
   audioPageStatus.dataset.state=state;
   audioPageStatus.textContent=thisPage?'音声：録音中 ●':has?'音声：録音済み（削除・再録音できます）':'音声：未録音';
+  // 録音・停止・削除・再録音・ページ移動のたびに下段の音声トラックも更新。
+  drawTimeline();
 }
 function stopRecordingIfActive(reason='pageChange'){
   const session=activeRecording;
@@ -6241,7 +6280,7 @@ saveLogBtn.onclick = () => {
       <li>写真・画像の取り込み（ページに収まるよう自動縮小）、移動・回転・拡大縮小、スタンプ</li>
       <li>カメラ／画像からのなげなわ切り抜き</li>
       <li>見開きページの追加・削除</li>
-      <li>ページ別の音声録音、試聴、削除・再録音、音声ファイル保存と読み聞かせでの再生</li>
+      <li>ページ別の音声録音、試聴、削除・再録音、音声ファイル保存と読み聞かせでの再生。ページ下のタイムラインには「音声あり／なし／録音中」を表示します。</li>
       <li>「作品を保存」で絵・写真・録音・操作過程を1つの .ehon ファイルとして保存し、「作品を開く」で復元できます。</li>
       <li>「QRで共有」でiPhoneやAndroidと作品を直接転送できます。受信者はQRを読み取り「受信を開始」→「端末に保存」または「開いて再生」を選びます。受信完了まで共有元のアプリを開いたままにしてください。</li>
       <li>「作品を再生」では表紙から制作過程と各ページの音声を自動再生します。</li>
