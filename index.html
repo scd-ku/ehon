@@ -199,6 +199,8 @@ main{display:flex;gap:12px;padding:16px}
 
 /* 内部キャンバス */
 canvas{display:block;touch-action:none}
+#paint{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+#imgMenu{-webkit-user-select:none;user-select:none;touch-action:manipulation}
 #bg,#tint,#obj,#paint,#fx{
   position:absolute;
   left:26px;top:26px;
@@ -1263,6 +1265,7 @@ function updateViewTransform(){
 let isPinching=false;
 let pinchStartDist=0, pinchStartScale=1;
 let pinchAnchorX=0,pinchAnchorY=0;
+let pinchOriginLeft=0,pinchOriginTop=0;
 function touchDistance(t1,t2){
   return Math.hypot(t1.clientX-t2.clientX,t1.clientY-t2.clientY);
 }
@@ -1272,6 +1275,7 @@ function pinchMidpoint(touches){
 }
 function beginPinch(e){
   if(e.touches.length!==2||isPinching)return;
+  cancelTouchLongPress(); // 2本指になった時点で長押しを無効化
   // One-finger stroke started just before the second finger: discard its
   // unfinished preview rather than leave a stray dot or moved object.
   if(isDraw){
@@ -1284,9 +1288,11 @@ function beginPinch(e){
   isPinching=true;
   pinchStartDist=Math.max(1,touchDistance(e.touches[0],e.touches[1]));
   pinchStartScale=viewScale;
-  const mid=pinchMidpoint(e.touches),rect=stage.getBoundingClientRect();
-  pinchAnchorX=(mid.x-rect.left)/viewScale;
-  pinchAnchorY=(mid.y-rect.top)/viewScale;
+  const mid=pinchMidpoint(e.touches);
+  const origin=stageUntransformedOrigin();
+  pinchOriginLeft=origin.left;pinchOriginTop=origin.top;
+  pinchAnchorX=(mid.x-pinchOriginLeft-viewOffsetX)/viewScale;
+  pinchAnchorY=(mid.y-pinchOriginTop-viewOffsetY)/viewScale;
   e.preventDefault();
 }
 stage.addEventListener('touchstart',beginPinch,{passive:false});
@@ -1296,15 +1302,16 @@ stage.addEventListener('touchmove',e=>{
   if(e.touches.length!==2){e.preventDefault();return;}
   const mid=pinchMidpoint(e.touches);
   const targetScale=clamp(pinchStartScale*touchDistance(e.touches[0],e.touches[1])/pinchStartDist,0.5,3);
-  const origin=stageUntransformedOrigin();
-  viewOffsetX=mid.x-origin.left-pinchAnchorX*targetScale;
-  viewOffsetY=mid.y-origin.top-pinchAnchorY*targetScale;
+  viewOffsetX=mid.x-pinchOriginLeft-pinchAnchorX*targetScale;
+  viewOffsetY=mid.y-pinchOriginTop-pinchAnchorY*targetScale;
   viewScale=targetScale;
   updateViewTransform();
   e.preventDefault();
 },{passive:false});
 stage.addEventListener('touchend',e=>{if(e.touches.length<2)isPinching=false},{passive:false});
 stage.addEventListener('touchcancel',()=>{isPinching=false},{passive:false});
+stage.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
+stage.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});
 
 /* ステージレイアウト */
 function layoutStage(){
@@ -2477,77 +2484,35 @@ function makeWatercolorTexture(){
   }
   _wcTex=t; return t;
 }
+/* 水彩・カリグラフィーの細かな点の重ね描きをやめ、連続線を作る。
+   透明度は筆跡全体の確定時に一度だけ適用し、停留箇所の濃い円を防ぐ。 */
 function stampWatercolor(ctx,x1,y1,x2,y2,color,size,wet){
-  const tex=makeWatercolorTexture();
-  const step=Math.max(1,size*0.32);
-  const len=Math.hypot(x2-x1,y2-y1)||1;
-  const nx=(x2-x1)/len, ny=(y2-y1)/len;
-  const buf=document.createElement('canvas');
-  const bctx=buf.getContext('2d');
   ctx.save();
-  ctx.globalCompositeOperation='multiply';
-  const baseAlpha=0.18+wet*0.32;
-  for(let d=0;d<=len;d+=step){
-    const px=x1+nx*d+(Math.random()-0.5)*size*0.08;
-    const py=y1+ny*d+(Math.random()-0.5)*size*0.08;
-    const s=size*(0.88+Math.random()*0.28);
-    const a=baseAlpha*(0.85+Math.random()*0.3);
-    buf.width=buf.height=s|0;
-    bctx.clearRect(0,0,buf.width,buf.height);
-    bctx.drawImage(tex,0,0,buf.width,buf.height);
-    bctx.globalCompositeOperation='source-in';
-    bctx.fillStyle=color;
-    bctx.fillRect(0,0,buf.width,buf.height);
-    bctx.globalCompositeOperation='source-over';
-    ctx.globalAlpha=a;
-    const ang=Math.random()*Math.PI*2;
-    ctx.translate(px,py);
-    ctx.rotate(ang);
-    ctx.drawImage(buf,-buf.width/2,-buf.height/2);
-    ctx.rotate(-ang);
-    ctx.translate(-px,-py);
-  }
+  ctx.globalAlpha=(ctx===sc)?1:(0.2+wet*0.45);
+  ctx.globalCompositeOperation='source-over';
+  ctx.strokeStyle=color;
+  ctx.lineWidth=Math.max(1,size*(0.8+wet*0.15));
+  ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
   ctx.restore();
 }
-function stampCalligraphy(ctx, x1, y1, x2, y2, color, size, nibAngleRad, pressure, speed, mix){
-  const dx = x2 - x1, dy = y2 - y1;
-  const len = Math.hypot(dx, dy) || 1;
-
-  const speedN = Math.min(1, Math.max(0, speed * 2.2));
-  const speedScale = 1.0 - 0.55 * speedN;
-
-  const p = Math.min(1.0, Math.max(0.15, pressure || 0.5));
-  const base = size * speedScale * (0.35 + 0.65 * p);
-
-  const dir = Math.atan2(dy, dx);
-  const a = dir - nibAngleRad;
-  const thickK = Math.abs(Math.sin(a)); // 0〜1
-
-  const rx = Math.max(0.6, base * 0.55);
-  const ry = Math.max(0.6, base * (0.10 + 0.55 * thickK));
-
-  const step = Math.max(0.6, base * 0.22);
-
+let calligPrevWidth=null;
+function stampCalligraphy(ctx,x1,y1,x2,y2,color,size,nibAngleRad,pressure,speed,mix){
+  const dx=x2-x1,dy=y2-y1;
+  if(Math.hypot(dx,dy)<0.2)return;
+  const speedScale=1-0.32*Math.min(1,Math.max(0,speed*2.2));
+  const p=Math.min(1,Math.max(0.15,pressure||0.5));
+  const base=size*speedScale*(0.55+0.45*p);
+  const thickK=Math.abs(Math.sin(Math.atan2(dy,dx)-nibAngleRad));
+  const targetWidth=Math.max(0.8,base*(0.28+0.75*thickK));
+  const width=calligPrevWidth==null?targetWidth:(0.72*calligPrevWidth+0.28*targetWidth);
+  calligPrevWidth=width;
   ctx.save();
-  // 一筆全体を最後に半透明合成する。筆先の楕円を重ねて黒丸を作らない。
-  ctx.globalAlpha = (ctx===sc) ? 1 : (mix ? 0.6 : 1.0);
-  ctx.fillStyle = color;
-
-  for(let d=0; d<=len; d+=step){
-    const t = d / len;
-    const px = x1 + dx * t;
-    const py = y1 + dy * t;
-
-    ctx.save();
-    ctx.translate(px, py);
-    ctx.rotate(nibAngleRad);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  ctx.globalAlpha = 1.0;
+  ctx.globalAlpha=(ctx===sc)?1:(mix?0.6:1);
+  ctx.globalCompositeOperation='source-over';
+  ctx.strokeStyle=color;ctx.lineWidth=width;
+  ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
   ctx.restore();
 }
 
@@ -2628,7 +2593,10 @@ function beginStrokeCapture(){
   sbc.drawImage(paintCvs,0,0);
   strokeActive = true;
   strokeBox = null;
-  strokeOpacity=(brushMode==='crayon'||brushMode==='calligraphy') && mixMode?0.6:1;
+  strokeOpacity=brushMode==='watercolor'
+    ?Math.max(0.2,Math.min(0.8,0.2+wcWet*0.45))
+    :((brushMode==='crayon'||brushMode==='calligraphy')&&mixMode?0.6:1);
+  calligPrevWidth=null;
 }
 function expandStrokeBox(x1,y1,x2,y2){
   const pad = penSize*1.6 + 16;
@@ -2664,7 +2632,7 @@ function restorePaintToBase(){
 function cancelStrokeCapture(){
   strokeActive = false;
   strokeBox = null;
-  strokeOpacity=1;
+  strokeOpacity=1;calligPrevWidth=null;
   sc.clearRect(0,0,W,H);
 }
 /* ★ 未確定の一筆があれば確定させる */
@@ -3541,14 +3509,79 @@ function canvasUp(e){
   }
 }
 
+/* iPad: 約0.5秒の長押しを Mac の右クリックメニューに対応させる。
+   長押し前は描画やスタンプを実行せず、移動すればすぐ通常の操作を開始する。 */
+const LONG_PRESS_DELAY=520;
+const LONG_PRESS_MOVE_PX=9;
+let pendingCanvasTouch=null;
+let lastCanvasLongPressAt=0;
+function cancelTouchLongPress(){
+  if(!pendingCanvasTouch)return;
+  clearTimeout(pendingCanvasTouch.timer);
+  pendingCanvasTouch=null;
+}
+function syntheticStartTouch(p){
+  const touch={identifier:p.identifier,clientX:p.x,clientY:p.y,
+               force:p.force,touchType:p.touchType};
+  return {type:'touchstart',touches:[touch],changedTouches:[touch],preventDefault(){}};
+}
+function canvasTouchStart(e){
+  if(e.touches.length!==1||isPinching){
+    cancelTouchLongPress();e.preventDefault();return;
+  }
+  const t=e.touches[0];
+  if(t.touchType==='stylus'){canvasDown(e);return;} // Apple Pencil は即時
+  cancelTouchLongPress();
+  const pending={identifier:t.identifier,x:t.clientX,y:t.clientY,
+    force:t.force??0.5,touchType:t.touchType,timer:null};
+  pendingCanvasTouch=pending;
+  pending.timer=setTimeout(()=>{
+    if(pendingCanvasTouch!==pending||isPinching)return;
+    pendingCanvasTouch=null;
+    lastCanvasLongPressAt=Date.now();
+    openCanvasContextMenu(pending.x,pending.y);
+  },LONG_PRESS_DELAY);
+  e.preventDefault();
+}
+function canvasTouchMove(e){
+  if(isPinching||e.touches.length!==1){cancelTouchLongPress();return;}
+  const p=pendingCanvasTouch;
+  if(p){
+    const t=e.touches[0];
+    if(t.identifier!==p.identifier){cancelTouchLongPress();return;}
+    if(Math.hypot(t.clientX-p.x,t.clientY-p.y)<LONG_PRESS_MOVE_PX){
+      e.preventDefault();return;
+    }
+    cancelTouchLongPress();
+    canvasDown(syntheticStartTouch(p));
+  }
+  canvasMove(e);
+  e.preventDefault();
+}
+function canvasTouchEnd(e){
+  if(isPinching){cancelTouchLongPress();return;}
+  const p=pendingCanvasTouch;
+  if(p){
+    cancelTouchLongPress();
+    if(!e.changedTouches||![...e.changedTouches].some(t=>t.identifier===p.identifier))return;
+    canvasDown(syntheticStartTouch(p));
+  }
+  canvasUp(e);e.preventDefault();
+}
+function canvasTouchCancel(e){
+  cancelTouchLongPress();
+  if(strokeActive){restorePaintToBase();cancelStrokeCapture();}
+  isDraw=false;isPanning=false;action=null;isStampDrawing=false;
+  e.preventDefault();
+}
 paintCvs.addEventListener('mousedown',canvasDown);
 paintCvs.addEventListener('mousemove',canvasMove);
 paintCvs.addEventListener('mouseup',canvasUp);
 paintCvs.addEventListener('mouseleave',canvasUp);
-paintCvs.addEventListener('touchstart',canvasDown,{passive:false});
-paintCvs.addEventListener('touchmove',canvasMove,{passive:false});
-paintCvs.addEventListener('touchend',canvasUp,{passive:false});
-paintCvs.addEventListener('touchcancel',canvasUp,{passive:false});
+paintCvs.addEventListener('touchstart',canvasTouchStart,{passive:false});
+paintCvs.addEventListener('touchmove',canvasTouchMove,{passive:false});
+paintCvs.addEventListener('touchend',canvasTouchEnd,{passive:false});
+paintCvs.addEventListener('touchcancel',canvasTouchCancel,{passive:false});
 
 /* ========= カメラ＋なげなわ切り抜き ========= */
 const camModal=document.getElementById('camModal');
@@ -5086,28 +5119,30 @@ function hideImgMenu(){
   imgMenu.style.display='none';
   menuTargetIndex=-1;
 }
-paintCvs.addEventListener('contextmenu',(e)=>{
-  e.preventDefault();
+function openCanvasContextMenu(clientX,clientY){
   hideImgMenu();
-  const p=pos(paintCvs,e);
+  const p=pos(paintCvs,{clientX,clientY});
   lastRightClickPos=p;
   let hitIndex=-1;
   for(let i=spreads[cur].objs.length-1;i>=0;i--){
-    const o=spreads[cur].objs[i];
-    if(hitObj(o,p.x,p.y)){ hitIndex=i; break; }
+    if(hitObj(spreads[cur].objs[i],p.x,p.y)){hitIndex=i;break;}
   }
   menuTargetIndex=hitIndex;
-  // ★ 右クリックした画像をそのまま「選択中」にする
   if(hitIndex>=0){
     sel=hitIndex;
-    if(mode!=='edit') setMode('edit');
+    if(mode!=='edit')setMode('edit');
     redrawObjs();
   }
-  const menuMode=(hitIndex>=0)?'obj':'blank';
-  showImgMenu(e.clientX,e.clientY,menuMode);
+  showImgMenu(clientX,clientY,hitIndex>=0?'obj':'blank');
+}
+paintCvs.addEventListener('contextmenu',e=>{
+  e.preventDefault();
+  if(Date.now()-lastCanvasLongPressAt<1100)return;
+  openCanvasContextMenu(e.clientX,e.clientY);
 });
 document.addEventListener('click',(e)=>{
-  if(!e.target.closest('#imgMenu')) hideImgMenu();
+  if(e.target===paintCvs&&Date.now()-lastCanvasLongPressAt<1100)return;
+  if(!e.target.closest('#imgMenu'))hideImgMenu();
 });
 btnDup.onclick=()=>{
   if(menuTargetIndex<0) return;
@@ -6327,7 +6362,7 @@ saveLogBtn.onclick = () => {
 
     <h3>基本の使い方</h3>
     <ol>
-      <li>矢印ツールでオブジェクトを選び、手のアイコンでキャンバスを移動します。</li>
+      <li>矢印ツールでオブジェクトを選び、手のアイコンでキャンバスを移動します。Macでは右クリック／２本指タップ、iPadでは画像や線を約0.5秒長押しすると、複製・削除・前後移動のメニューを開けます。</li>
       <li>ペンを選び、パレットでブラシ・色・太さを設定して描きます。</li>
       <li>画像ボタンから写真を読み込み、画像編集ツールで位置・角度・大きさを整えます。</li>
       <li>必要に応じてカメラ／なげなわ切り抜きやスタンプを使います。</li>
