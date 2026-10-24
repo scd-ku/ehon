@@ -1239,16 +1239,19 @@ let viewOffsetX = 0;
 let viewOffsetY = 0;
 function clamp(v, min, max){ return v < min ? min : v > max ? max : v; }
 
-function zoomAt(clientX, clientY, scaleMultiplier){
-  const rect = stage.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
-  const worldX = (x - viewOffsetX) / viewScale;
-  const worldY = (y - viewOffsetY) / viewScale;
-  let newScale = clamp(viewScale * scaleMultiplier, 0.5, 3);
-  viewOffsetX = x - worldX * newScale;
-  viewOffsetY = y - worldY * newScale;
-  viewScale = newScale;
+// getBoundingClientRect は transform 適用済み。offset を二重に引かない。
+function stageUntransformedOrigin(){
+  const rect=stage.getBoundingClientRect();
+  return {left:rect.left-viewOffsetX,top:rect.top-viewOffsetY};
+}
+function zoomAt(clientX,clientY,scaleMultiplier){
+  const origin=stageUntransformedOrigin();
+  const x=clientX-origin.left,y=clientY-origin.top;
+  const worldX=(x-viewOffsetX)/viewScale, worldY=(y-viewOffsetY)/viewScale;
+  const newScale=clamp(viewScale*scaleMultiplier,0.5,3);
+  viewOffsetX=x-worldX*newScale;
+  viewOffsetY=y-worldY*newScale;
+  viewScale=newScale;
   updateViewTransform();
 }
 function updateViewTransform(){
@@ -1256,36 +1259,52 @@ function updateViewTransform(){
   stage.style.transform = `translate(${viewOffsetX}px, ${viewOffsetY}px) scale(${viewScale})`;
 }
 
-/* 2本指ピンチズーム（タッチ用） */
-let isPinching = false;
-let pinchStartDist = 0;
-let pinchStartScale = 1;
-function touchDistance(t1, t2){
-  const dx = t1.clientX - t2.clientX;
-  const dy = t1.clientY - t2.clientY;
-  return Math.hypot(dx, dy);
+/* iPad/iPhone: 2本指の中央を世界座標の固定点として拡大縮小 */
+let isPinching=false;
+let pinchStartDist=0, pinchStartScale=1;
+let pinchAnchorX=0,pinchAnchorY=0;
+function touchDistance(t1,t2){
+  return Math.hypot(t1.clientX-t2.clientX,t1.clientY-t2.clientY);
 }
-stage.addEventListener('touchstart', (e)=>{
-  if(e.touches.length === 2){
-    isPinching = true;
-    pinchStartDist = touchDistance(e.touches[0], e.touches[1]);
-    pinchStartScale = viewScale;
-    e.preventDefault();
+function pinchMidpoint(touches){
+  return {x:(touches[0].clientX+touches[1].clientX)/2,
+          y:(touches[0].clientY+touches[1].clientY)/2};
+}
+function beginPinch(e){
+  if(e.touches.length!==2||isPinching)return;
+  // One-finger stroke started just before the second finger: discard its
+  // unfinished preview rather than leave a stray dot or moved object.
+  if(isDraw){
+    if(strokeActive){restorePaintToBase();cancelStrokeCapture();}
+    isDraw=false;
   }
+  isPanning=false;
+  isStampDrawing=false;
+  action=null;
+  isPinching=true;
+  pinchStartDist=Math.max(1,touchDistance(e.touches[0],e.touches[1]));
+  pinchStartScale=viewScale;
+  const mid=pinchMidpoint(e.touches),rect=stage.getBoundingClientRect();
+  pinchAnchorX=(mid.x-rect.left)/viewScale;
+  pinchAnchorY=(mid.y-rect.top)/viewScale;
+  e.preventDefault();
+}
+stage.addEventListener('touchstart',beginPinch,{passive:false});
+stage.addEventListener('touchmove',e=>{
+  if(e.touches.length===2&&!isPinching)beginPinch(e);
+  if(!isPinching)return;
+  if(e.touches.length!==2){e.preventDefault();return;}
+  const mid=pinchMidpoint(e.touches);
+  const targetScale=clamp(pinchStartScale*touchDistance(e.touches[0],e.touches[1])/pinchStartDist,0.5,3);
+  const origin=stageUntransformedOrigin();
+  viewOffsetX=mid.x-origin.left-pinchAnchorX*targetScale;
+  viewOffsetY=mid.y-origin.top-pinchAnchorY*targetScale;
+  viewScale=targetScale;
+  updateViewTransform();
+  e.preventDefault();
 },{passive:false});
-stage.addEventListener('touchmove', (e)=>{
-  if(isPinching && e.touches.length === 2){
-    const dist = touchDistance(e.touches[0], e.touches[1]);
-    const cxClient = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-    const cyClient = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-    let targetScale = pinchStartScale * (dist / pinchStartDist);
-    targetScale = clamp(targetScale, 0.5, 3);
-    const scaleMultiplier = targetScale / viewScale;
-    zoomAt(cxClient, cyClient, scaleMultiplier);
-    e.preventDefault();
-  }
-},{passive:false});
-stage.addEventListener('touchcancel', ()=>{ isPinching=false; },{passive:false});
+stage.addEventListener('touchend',e=>{if(e.touches.length<2)isPinching=false},{passive:false});
+stage.addEventListener('touchcancel',()=>{isPinching=false},{passive:false});
 
 /* ステージレイアウト */
 function layoutStage(){
