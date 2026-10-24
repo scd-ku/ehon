@@ -110,6 +110,17 @@ body{
   box-shadow:0 1px 2px rgba(0,0,0,.15) inset;
   cursor:pointer;
 }
+.current-pen-button{
+  flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  min-width:44px;min-height:44px;padding:4px;margin:0;
+  border:1px solid transparent;border-radius:12px;background:transparent;
+  color:inherit;cursor:pointer;touch-action:manipulation;
+}
+.current-pen-button:hover,.current-pen-button:focus-visible,
+.current-pen-button[aria-expanded="true"]{
+  border-color:#b9c4cc;background:#f3f6f7;outline-offset:2px;
+}
+.current-pen-button .color-swatch{pointer-events:none;}
 
 /* ステージ全体 */
 main{display:flex;gap:12px;padding:16px}
@@ -360,6 +371,19 @@ canvas{display:block;touch-action:none}
 }
 #camOverlay{touch-action:none;}
 .camBtns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cam-live-status{
+  position:absolute;left:10px;bottom:10px;z-index:3;
+  max-width:calc(100% - 20px);padding:6px 9px;border-radius:7px;
+  background:rgba(12,16,18,.76);color:#fff;font-size:12px;
+  line-height:1.4;pointer-events:none;
+}
+@media (max-width:720px){
+  .camCard{width:98vw;height:82vh;height:82dvh;max-height:820px}
+  .camHead{flex-wrap:wrap;padding:7px 9px;gap:5px}
+  .camHead .camBtns{gap:5px}
+  .camBody{height:calc(100% - 94px)}
+  .camVideoPanel{max-width:170px}
+}
 #camDropHint{
   position:absolute;inset:0;display:none;align-items:center;justify-content:center;
   background:rgba(0,0,0,.55);color:#fff;font-size:18px;font-weight:700;z-index:6;
@@ -628,11 +652,17 @@ canvas{display:block;touch-action:none}
 
   <!-- スポイト -->
   <button id="eyedropperBtn" class="btn icon" title="スポイト：画面内の色を取得" aria-label="スポイト：画面内の色を取得">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M11 8l5 5-7.5 7.5a2 2 0 0 1-2.8-2.8L13.2 10M15 6l2-2a2.1 2.1 0 0 1 3 3l-2 2M6.5 18.5H4"/></svg>
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M16.5 3a2.4 2.4 0 0 1 3.4 0l1.1 1.1a2.4 2.4 0 0 1 0 3.4l-1.8 1.8-4.5-4.5Z"/>
+      <path d="m14.7 4.8-2.6 2.6 4.5 4.5 2.6-2.6M12.1 7.4l-7.6 9.3-.5 3.3 3.3-.5 9.3-7.6"/>
+      <path d="m4.9 16.4 3.7 3.7M3 22h5"/>
+    </svg>
   </button>
 
   <!-- 取得した色のスウォッチ -->
-  <div id="pickedColorSwatch" class="color-swatch" title="スポイトやカラーピッカーでえらんだ色"></div>
+  <button id="currentPenSettings" class="current-pen-button" type="button" title="現在の色・太さをタップしてパレットを開く" aria-label="現在のペンの色・太さ。タップしてブラシ・色・太さ設定を開く" aria-controls="drawPanel" aria-expanded="false">
+    <span id="pickedColorSwatch" class="color-swatch" aria-hidden="true"></span>
+  </button>
 
   <button id="eraserToggle" class="btn icon" title="消しゴム：線や画像を消去" aria-label="消しゴム：線や画像を消去">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 14 8-8a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L14 20H9l-5-5a1.4 1.4 0 0 1 0-2Z"/><path d="m9 9 7 7M14 20h7"/></svg>
@@ -881,12 +911,14 @@ canvas{display:block;touch-action:none}
       <div class="camBtns">
         <select id="camSelect" class="camSelect" title="使うカメラを選びます"></select>
         <button id="camRefresh" class="btn small" title="カメラ一覧を更新">更新</button>
+        <button id="camResume" class="btn small" type="button" title="iPadやiPhoneで動画が止まったときに再開" style="display:none">▶ 映像を再開</button>
       </div>
     </div>
     <div class="camBody">
-      <video id="camVideo" playsinline autoplay muted></video>
+      <video id="camVideo" playsinline webkit-playsinline autoplay muted preload="none" disablepictureinpicture></video>
       <canvas id="camView"></canvas>
       <canvas id="camOverlay"></canvas>
+      <div id="camLiveStatus" class="cam-live-status" role="status" aria-live="polite">カメラの準備中…</div>
       <div id="camDropHint">ここに画像をドロップ</div>
 
       <div class="camVideoPanel">
@@ -2346,15 +2378,21 @@ const pageBgColor  =document.getElementById('pageBgColor');
 const pageBgAlpha  =document.getElementById('pageBgAlpha');
 const alphaView    =document.getElementById('alphaView');
 
-openDrawPanelBtn.onclick=(e)=>{
+const currentPenSettings=document.getElementById('currentPenSettings');
+function toggleDrawSettings(e){
   const willOpen=!drawPanel.classList.contains('open');
   drawPanel.classList.toggle('open',willOpen);
   openDrawPanelBtn.classList.toggle('on',willOpen);
-  erasing=false; isEyedropperMode=false; isPanMode=false;
-  mode='none';
-  updateToolHighlights();
-  e.stopPropagation();
-};
+  currentPenSettings.setAttribute('aria-expanded',String(willOpen));
+  if(willOpen){
+    erasing=false;isEyedropperMode=false;isPanMode=false;
+    mode='none';
+    updateToolHighlights();
+  }
+  e?.stopPropagation();
+}
+openDrawPanelBtn.onclick=toggleDrawSettings;
+currentPenSettings.onclick=toggleDrawSettings;
 
 /* ★ 矢印（選択）ツール：えらぶだけ。描かない */
 if(mSelect){
@@ -2397,10 +2435,6 @@ pageBgAlpha.oninput =()=>{ spreads[cur].tint.alpha=(+pageBgAlpha.value)/100; alp
 setSwatchColor(penColor);
 setPenSize(penSize);
 
-pickedColorSwatch.addEventListener('click',()=>{
-  hideDrawPanel();
-  penColorInput.click();
-});
 headerColorInput.addEventListener('input',(e)=>{
   const col=e.target.value;
   penColor=col;
@@ -2410,6 +2444,7 @@ headerColorInput.addEventListener('input',(e)=>{
 function hideDrawPanel(){
   drawPanel.classList.remove('open');
   openDrawPanelBtn.classList.remove('on');
+  currentPenSettings.setAttribute('aria-expanded','false');
   stampPanel.classList.remove('open');    // ★ スタンプパネルも閉じる
 }
 // ★ パネルの外側をクリックしたときだけ閉じる
@@ -2417,7 +2452,7 @@ document.addEventListener('click',(e)=>{
   const target = e.target;
 
   // パレットを開くボタン／スタンプボタンを押したときは閉じない
-  const isToolBtn = target.closest('#openDrawPanel, #mStamp');
+  const isToolBtn = target.closest('#openDrawPanel, #currentPenSettings, #mStamp');
 
   // パレット内／スタンプパネル内をクリックしたときも閉じない
   const insideDrawPanel  = drawPanel.contains(target);
@@ -3604,6 +3639,8 @@ const btnOpenCam=document.getElementById('openCam');
 const btnCamClose=document.getElementById('camClose');
 const camSelect=document.getElementById('camSelect');
 const camRefresh=document.getElementById('camRefresh');
+const camResume=document.getElementById('camResume');
+const camLiveStatus=document.getElementById('camLiveStatus');
 
 const camBrightness=document.getElementById('camBrightness');
 const camContrast  =document.getElementById('camContrast');
@@ -3634,7 +3671,7 @@ function getCamSource(){
     }
     return null;
   }
-  if(camStream && camVideo.videoWidth && camVideo.videoHeight){
+  if(camStream && camVideo.readyState>=2 && !camVideo.paused && camVideo.videoWidth && camVideo.videoHeight){
     return {el:camVideo, w:camVideo.videoWidth, h:camVideo.videoHeight};
   }
   return null;
@@ -3790,10 +3827,14 @@ function drawCamFrameToComposite(){
 (function renderLoop(){
   if(camModal.classList.contains('show')){
     if(camSourceMode==='image'){
-      if(camImageEl) drawCamFrameToComposite();
-    }else if(camStream && camVideo.readyState>=2){
-      camVideo.style.visibility='visible';
-      drawCamFrameToComposite();
+      if(camImageEl)drawCamFrameToComposite();
+    }else if(camStream){
+      if(camVideo.readyState>=2 && !camVideo.paused){
+        drawCamFrameToComposite();
+        checkCamFrameProgress();
+      }else{
+        checkCamFrameProgress();
+      }
     }
   }
   requestAnimationFrame(renderLoop);
@@ -3923,9 +3964,72 @@ function olUp(e){
 ['mousemove','touchmove'].forEach(ev=>camOverlay.addEventListener(ev,olMove,{passive:false}));
 ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev=>camOverlay.addEventListener(ev,olUp,{passive:false}));
 
-/* カメラ起動/停止 */
+/* カメラ起動/停止 (iOS Safariでも必ずvideo.play()を実行) */
+let camStartToken=0,camPlayingAttempt=false,camAutoRetryAt=0;
+let camLastProgressAt=0,camLastVideoTime=-1;
+let camStatusText='';
+function setCamLiveStatus(message,showResume=false){
+  if(camStatusText!==message){
+    camStatusText=message;
+    camLiveStatus.textContent=message;
+  }
+  camResume.style.display=showResume?'':'none';
+}
+function readyCamMediaElement(){
+  camVideo.autoplay=true;
+  camVideo.muted=true;
+  camVideo.defaultMuted=true;
+  camVideo.playsInline=true;
+  camVideo.setAttribute('playsinline','');
+  camVideo.setAttribute('webkit-playsinline','');
+  camVideo.setAttribute('muted','');
+  camVideo.controls=false;
+}
+async function resumeCamVideo(){
+  if(camSourceMode!=='camera'||!camStream||camPlayingAttempt)return false;
+  if(!camStream.getVideoTracks().some(t=>t.readyState==='live'))return false;
+  camPlayingAttempt=true;
+  try{
+    readyCamMediaElement();
+    if(camVideo.srcObject!==camStream)camVideo.srcObject=camStream;
+    // iPhone/iPad は autoplay 属性だけでは最初のフレームで止まることがある。
+    // 明示的な play() に加え、ユーザー操作の「映像を再開」からも呼ぶ。
+    const playing=camVideo.play();
+    if(playing&&typeof playing.then==='function')await playing;
+    camLastProgressAt=performance.now();
+    camLastVideoTime=camVideo.currentTime;
+    setCamLiveStatus('● ライブ映像');
+    return true;
+  }catch(e){
+    console.warn('Camera video.play() failed',e);
+    setCamLiveStatus('カメラ映像を開始できません。上の「▶ 映像を再開」を押してください。',true);
+    return false;
+  }finally{camPlayingAttempt=false}
+}
+function checkCamFrameProgress(){
+  if(camSourceMode!=='camera'||!camStream||!camModal.classList.contains('show'))return;
+  const now=performance.now();
+  const t=camVideo.currentTime;
+  if(!camVideo.paused&&camVideo.readyState>=2&&
+     Number.isFinite(t)&&Math.abs(t-camLastVideoTime)>0.015){
+    camLastVideoTime=t;
+    camLastProgressAt=now;
+    if(camStatusText!=='● ライブ映像')setCamLiveStatus('● ライブ映像');
+    return;
+  }
+  if(!camLastProgressAt)camLastProgressAt=now;
+  if(now-camLastProgressAt>2200){
+    setCamLiveStatus('カメラ映像が停止しています。「▶ 映像を再開」を押してください。',true);
+    if(now-camAutoRetryAt>5000){
+      camAutoRetryAt=now;
+      // 無限に play() を連打せず、ユーザー操作でも再開できるようにする。
+      resumeCamVideo().catch(e=>console.warn(e));
+    }
+  }
+}
 async function populateCamList(){
   try{
+    if(!navigator.mediaDevices?.enumerateDevices)return;
     const devices=await navigator.mediaDevices.enumerateDevices();
     const vids=devices.filter(d=>d.kind==='videoinput');
     camSelect.innerHTML='';
@@ -3935,30 +4039,101 @@ async function populateCamList(){
       opt.textContent=d.label||`カメラ ${idx+1}`;
       camSelect.appendChild(opt);
     });
-    if(!currentCamDeviceId && vids[0]) currentCamDeviceId=vids[0].deviceId;
-    if(currentCamDeviceId) camSelect.value=currentCamDeviceId;
-  }catch(e){
-    console.warn('enumerateDevices error',e);
-  }
-}
-async function startCam(deviceId=null){
-  try{
-    if(camStream){ camStream.getTracks().forEach(t=>t.stop()); }
-    const constraints={ video: deviceId?{deviceId:{exact:deviceId}}:{width:{ideal:1280},height:{ideal:720}} };
-    camStream=await navigator.mediaDevices.getUserMedia(constraints);
-    camVideo.srcObject=camStream;
-    if(!deviceId){
-      await populateCamList();
+    if(!currentCamDeviceId&&vids[0])currentCamDeviceId=vids[0].deviceId;
+    if(currentCamDeviceId&&vids.some(d=>d.deviceId===currentCamDeviceId)){
+      camSelect.value=currentCamDeviceId;
     }
-  }catch(e){
-    alert('カメラが利用できません：'+e.message+'\n「画像をひらく」で保存した画像から切り抜くこともできます。');
-  }
+  }catch(e){console.warn('enumerateDevices error',e)}
 }
 function stopCam(){
-  try{ camStream?.getTracks().forEach(t=>t.stop()); }catch(_){}
+  camStartToken++;
+  try{camStream?.getTracks().forEach(t=>t.stop())}catch(_){}
   camStream=null;
+  camPlayingAttempt=false;
+  camLastVideoTime=-1;camLastProgressAt=0;
+  try{camVideo.pause();camVideo.srcObject=null}catch(_){}
   camVideo.style.visibility='hidden';
+  setCamLiveStatus('カメラ停止');
 }
+async function startCam(deviceId=null){
+  if(!navigator.mediaDevices?.getUserMedia){
+    setCamLiveStatus('このブラウザではカメラを使用できません。画像を開いて切り抜いてください。',true);
+    return;
+  }
+  // 前回の開始要求と古い動画を無効化し、非同期競合で停止動画を表示しない。
+  stopCam();
+  const token=camStartToken;
+  camSourceMode='camera';
+  readyCamMediaElement();
+  setCamLiveStatus('カメラを起動しています…');
+  const videoConstraints=deviceId
+    ?{deviceId:{exact:deviceId}}
+    :{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720},
+       frameRate:{ideal:24,max:30}};
+  let stream=null;
+  try{
+    try{stream=await navigator.mediaDevices.getUserMedia({video:videoConstraints,audio:false})}
+    catch(e){
+      // iOS はカメラIDを変更した後に使えなくなる場合があるため復帰する。
+      if(!deviceId||!['OverconstrainedError','NotFoundError'].includes(e.name))throw e;
+      currentCamDeviceId=null;
+      stream=await navigator.mediaDevices.getUserMedia({
+        video:{facingMode:{ideal:'environment'}},audio:false
+      });
+    }
+    if(token!==camStartToken||!camModal.classList.contains('show')){
+      stream.getTracks().forEach(t=>t.stop());return;
+    }
+    camStream=stream;
+    const track=stream.getVideoTracks()[0];
+    const actualId=track?.getSettings?.().deviceId;
+    if(actualId)currentCamDeviceId=actualId;
+    camVideo.srcObject=stream;
+    camVideo.style.visibility='visible';
+    camLastProgressAt=performance.now();
+    camLastVideoTime=-1;
+    // metadata は iOS で遅れて届くことがあるためイベントでも再生を補助。
+    await resumeCamVideo();
+    if(token===camStartToken){
+      await populateCamList();
+      requestAnimationFrame(()=>{if(token===camStartToken)sizeOverlay()});
+    }
+  }catch(e){
+    if(stream&&stream!==camStream)stream.getTracks().forEach(t=>t.stop());
+    console.error('カメラ起動失敗',e);
+    if(token!==camStartToken)return;
+    setCamLiveStatus('カメラを開始できません：'+(e.message||e.name),true);
+    alert('カメラが利用できません：'+(e.message||e.name)+
+      '\nカメラの許可を確認するか「画像をひらく」をお試しください。');
+  }
+}
+camResume.addEventListener('click',async()=>{
+  if(!camStream)await startCam(currentCamDeviceId);
+  else await resumeCamVideo();
+});
+camVideo.addEventListener('loadedmetadata',()=>{
+  if(camStream&&camSourceMode==='camera'&&camVideo.paused){
+    resumeCamVideo().catch(e=>console.warn(e));
+  }
+});
+camVideo.addEventListener('playing',()=>{
+  camLastProgressAt=performance.now();
+  camLastVideoTime=camVideo.currentTime;
+  setCamLiveStatus('● ライブ映像');
+});
+camVideo.addEventListener('pause',()=>{
+  if(camStream&&camModal.classList.contains('show'))
+    setCamLiveStatus('カメラ映像が停止しています。「▶ 映像を再開」を押してください。',true);
+});
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&camModal.classList.contains('show')&&camStream){
+    resumeCamVideo().catch(e=>console.warn(e));
+  }
+});
+window.addEventListener('pageshow',()=>{
+  if(camModal.classList.contains('show')&&camStream)
+    resumeCamVideo().catch(e=>console.warn(e));
+});
 
 /* ========= ローカル画像を読みこんでなげなわ切り抜き ========= */
 function updateCamModeUI(){
@@ -3966,6 +4141,8 @@ function updateCamModeUI(){
   if(camBackToCam) camBackToCam.style.display = isImg?'':'none';
   if(camSelect)    camSelect.style.display    = isImg?'none':'';
   if(camRefresh)   camRefresh.style.display   = isImg?'none':'';
+  if(camResume)    camResume.style.display    = isImg?'none':camResume.style.display;
+  if(isImg)setCamLiveStatus('画像から切り抜き中',false);
   if(camLoadImg)   camLoadImg.textContent     = isImg?'ほかの画像':'画像をひらく';
 }
 function clearCamImage(){
@@ -6430,7 +6607,7 @@ saveLogBtn.onclick = () => {
     <ul>
       <li>クレヨン・水彩・カリグラフィーなどの描画と、色・太さの調整</li>
       <li>スポイト、消しゴム、Undo、ページ全体のクリア</li>
-      <li>写真・画像の取り込み（ページに収まるよう自動縮小）、移動・回転・拡大縮小、スタンプ</li>
+      <li>写真・画像の取り込み（ページに収まるよう自動縮小）、移動・回転・拡大縮小、スタンプ。iPad・iPhoneのカメラも動画を見ながらなげなわ切り抜きでき、映像停止時は「▶ 映像を再開」で復帰できます。</li>
       <li>カメラ／画像からのなげなわ切り抜き</li>
       <li>見開きページの追加・削除</li>
       <li>ページ別の音声録音、試聴、削除・再録音、音声ファイル保存と読み聞かせでの再生。ページ下のタイムラインには「音声あり／なし／録音中」を表示します。</li>
@@ -6443,7 +6620,7 @@ saveLogBtn.onclick = () => {
     <h3>基本の使い方</h3>
     <ol>
       <li>矢印ツールでオブジェクトを選び、手のアイコンでキャンバスを移動します。Macでは右クリック／２本指タップ、iPadでは画像や線を約0.5秒長押しすると、複製・削除・前後移動のメニューを開けます。</li>
-      <li>ペンを選び、パレットでブラシ・色・太さを設定して描きます。</li>
+      <li>ペンを選び、パレット、またはツールバーに表示される現在の色と太さの丸を押して、ブラシ・色・太さを設定して描きます。</li>
       <li>画像ボタンから写真を読み込み、画像編集ツールで位置・角度・大きさを整えます。</li>
       <li>必要に応じてカメラ／なげなわ切り抜きやスタンプを使います。</li>
       <li>ページ追加ボタンで見開きを増やし、ページごとにマイクから録音し、停止ボタンで確定します。録音済みなら同じマイクボタンで再録音、ゴミ箱ボタンで音声だけを削除できます。</li>
