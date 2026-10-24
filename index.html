@@ -296,6 +296,19 @@ canvas{display:block;touch-action:none}
 .fs-audio-status{font-size:13px;padding:5px 8px;color:#f6f6f6;background:#383838;border-radius:999px;align-self:center}
 #recStart:disabled,#recStop:disabled,#playPage:disabled,#deleteAudio:disabled,#saveAudio:disabled,#fsReplayAudio:disabled{opacity:.42;cursor:not-allowed}
 @media(max-width:720px){#fsBtns{gap:5px;bottom:8px}#fsBtns .btn{font-size:13px;padding:6px 8px}.page-audio-status{display:block;width:max-content;margin:5px auto 0}}
+/* 作品保存・読み込みボタン */
+#projectTools{
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:center;
+  gap:8px;padding:8px 12px;margin:0 12px;
+}
+#projectTools .btn{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+#projectTools svg{width:18px;height:18px;stroke:currentColor;stroke-width:1.85;fill:none;stroke-linecap:round;stroke-linejoin:round}
+#saveProject{background:#f1f6f2;border-color:#cadacc}
+#replayProject{background:#f3f6fa;border-color:#cfd9e4}
+#projectStatus{font-size:12px;color:#586369;margin-left:8px}
+#projectTools .btn:disabled{opacity:.45}
+@media(max-width:720px){#projectTools{justify-content:flex-start}#projectTools .btn{font-size:12px;padding:8px 10px}#projectStatus{flex-basis:100%;margin-left:0}}
+
 /* カメラモーダル＋なげなわ＋映像設定 */
 #camModal{
   position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:250;
@@ -612,11 +625,12 @@ canvas{display:block;touch-action:none}
   </button>
 
   <!-- ★ スタンプモードボタン -->
-  <button id="mStamp" class="btn icon" title="ストックした画像をスタンプする">
+  <button id="mStamp" class="btn icon" title="スタンプ：保存した絵をページに押す" aria-label="スタンプを選んでページに押す">
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M10 4a2 2 0 0 1 4 0v3l1.5 2.5a2 2 0 0 1-1.7 3H10.2a2 2 0 0 1-1.7-3L10 7z"/>
-      <rect x="5" y="14" width="14" height="2" rx="1"/>
-      <rect x="4" y="17" width="16" height="3" rx="1.5"/>
+      <path d="M10 5a2 2 0 0 1 4 0v3c0 1 .5 1.7 1.4 2.4l1.6 1.8V15H7v-2.8l1.6-1.8C9.5 9.7 10 9 10 8V5Z"/>
+      <path d="M5 15h14v2H5z"/>
+      <path d="M7 20h10M12 18v4"/>
+      <path d="M20 4v5M17.5 6.5h5" stroke-dasharray="1.4 2"/>
     </svg>
   </button>
 
@@ -772,6 +786,24 @@ canvas{display:block;touch-action:none}
     </div>
   </section>
 </main>
+<!-- 絵・写真・音声・操作履歴をまとめた1ファイルを保存・読み込み -->
+<div id="projectTools" role="group" aria-label="絵本作品の保存と再生">
+  <button id="saveProject" class="btn" title="絵・画像・音声・描画過程を1つの .ehon ファイルに保存">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h13l3 3v13H4zM8 4v6h8V4M7 20v-7h10v7"/></svg>
+    作品を保存
+  </button>
+  <button id="loadProject" class="btn" title="保存済みの .ehon 作品を読み込む">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10l4 4v12H5zM15 4v4h4M12 11v7m-3-3 3 3 3-3"/></svg>
+    作品を開く
+  </button>
+  <button id="replayProject" class="btn" title="表紙から描画の過程と各ページの録音を続けて再生">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14l12-7z"/><path d="M20 7v10"/></svg>
+    作品を再生
+  </button>
+  <input id="projectFileInput" type="file" accept=".ehon,application/json" hidden aria-label="保存した作品ファイルを選択">
+  <span id="projectStatus" role="status" aria-live="polite">音声・絵・制作過程を保存できます</span>
+</div>
+
 <!-- ノートの下のページ番号表示 -->
 <div id="pageIndicator" style="text-align:center;font-size:12px;color:#666;margin:4px 0 8px;">
   ページ <span id="pageLabel">表紙</span>（<span id="pNow">1</span>/<span id="pAll">3</span>） <span id="audioPageStatus" class="page-audio-status" aria-live="polite">音声：未録音</span>
@@ -1006,6 +1038,7 @@ const actionLog = [];
 // ★ パフォーマンス時間と、開始時の「実時間」を両方持っておく
 const logStartPerf   = performance.now();
 const logStartWallMs = Date.now();
+let importedLogTimeOffset=0;
 
 /** ページごとのローカル時間管理 */
 const pageLocalTime        = {}; // page -> そのページで経過した「ページ時間」（秒）
@@ -1016,7 +1049,7 @@ const pageNextTimeOverride = {}; // page -> 次の logAction で使う開始ペ�
 function logAction(type, detail = {}) {
   // 経過時間（グローバル）
   const nowPerf = performance.now();
-  const tGlobal = (nowPerf - logStartPerf) / 1000;
+  const tGlobal = (nowPerf - logStartPerf) / 1000 + importedLogTimeOffset;
 
   // ★ 実時間（壁時計）も記録
   const wallMs  = Date.now();
@@ -1075,6 +1108,12 @@ function logAction(type, detail = {}) {
     wall_time_iso: wallIso,
     ...detail
   };
+  if (spreads[page-1]) entry.pageId=spreads[page-1].id;
+  // Keep exact results of destructive/image operations and completed strokes,
+  // so the exported book can reconstruct the whole visual editing process.
+  if(page===cur+1 && !replayingArchivedVisuals && SCENE_CAPTURE_EVENTS.has(type)){
+    try{entry.sceneFrame=captureSceneFrame();}catch(e){console.warn('過程の画像記録を省略',e)}
+  }
   actionLog.push(entry);
 
     // ★ ここから追加：pageTimeMax / 再生範囲（カッコ）の更新
@@ -1106,6 +1145,63 @@ function logAction(type, detail = {}) {
       }
     }
   }
+}
+
+
+/* 編集の節目を圧縮画像で記録する。途中のマウス移動は既存ログから連続描画する。
+   古いイベントログで再現できなかったUndo・消去・重ね順変更も復元可能。 */
+const SCENE_CAPTURE_EVENTS=new Set([
+  'drawEnd','undo','explodeClear','stampPlace','cameraCut','imageLoad',
+  'imageOp','imageDup','imageDelete','imageOrder','imagePaste'
+]);
+let replayingArchivedVisuals=false;
+const sceneFrameCache=new Map();
+function captureSceneFrame(){
+  const sp=spreads[cur];
+  const canvas=document.createElement('canvas');
+  canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext('2d');
+  ctx.save();
+  clipToPageArea(ctx,sp.type||'normal');
+  for(const o of sp.objs){
+    ctx.save();
+    ctx.translate(o.cx,o.cy);ctx.rotate(o.theta);ctx.scale(o.scale,o.scale);
+    ctx.drawImage(o.bmp,-o.w/2,-o.h/2);
+    ctx.restore();
+  }
+  ctx.restore();
+  ctx.drawImage(paintCvs,0,0);
+  // WebP keeps transparency and stays compact on contemporary browsers.
+  return canvas.toDataURL('image/webp',0.82);
+}
+function decodeCanvasImage(url){
+  return new Promise((resolve,reject)=>{
+    if(typeof url!=='string'||!url.startsWith('data:image/'))return reject(new Error('画像データが不正です'));
+    const image=new Image();
+    image.onload=()=>resolve(image);
+    image.onerror=()=>reject(new Error('画像データの読み込みに失敗しました'));
+    image.src=url;
+  });
+}
+async function prepareArchiveFrames(){
+  const unique=new Set(actionLog.map(e=>e.sceneFrame).filter(Boolean));
+  // Decode lazily but in sequence to limit simultaneous memory demand.
+  for(const url of unique){
+    if(sceneFrameCache.has(url))continue;
+    try{sceneFrameCache.set(url,await decodeCanvasImage(url))}
+    catch(e){console.warn('過程の画像を復元できません',e)}
+  }
+}
+function restoreArchiveFrame(ev){
+  const img=sceneFrameCache.get(ev.sceneFrame);
+  if(!img||!img.complete||!img.naturalWidth)return false;
+  cancelStrokeCapture();
+  pc.clearRect(0,0,W,H);
+  pc.drawImage(img,0,0,W,H);
+  spreads[cur].objs=[];
+  sel=-1;
+  redrawObjs();
+  return true;
 }
 
 /* ========= ズーム（ホイール＋ピンチ）＆パン ========= */
@@ -1833,8 +1929,10 @@ function drawBGForType(pageType){
 
 
 /* ========= 見開きデータ ========= */
+let nextSpreadID=1;
 function newSpread(type='normal'){
   return {
+    id:'spread-'+(nextSpreadID++),
     type,
     paintOff: null,
     objs: [],
@@ -1871,6 +1969,7 @@ drawBG();
 
 function cloneSpread(sp){
   const cloned = {
+    id: sp.id,
     type: sp.type,
     paintOff: null,
     objs: [],
@@ -5397,6 +5496,198 @@ if (playLogPageBtn){
 }
 
 
+
+/* ========= 完全作品アーカイブ .ehon (JSON, バージョン1) ========= */
+const projectSaveBtn=document.getElementById('saveProject');
+const projectLoadBtn=document.getElementById('loadProject');
+const projectReplayBtn=document.getElementById('replayProject');
+const projectFileInput=document.getElementById('projectFileInput');
+const projectStatus=document.getElementById('projectStatus');
+let projectBusy=false;
+function setProjectStatus(message){projectStatus.textContent=message}
+function setProjectBusy(busy){
+  projectBusy=busy;
+  projectSaveBtn.disabled=busy;
+  projectLoadBtn.disabled=busy;
+  projectReplayBtn.disabled=busy;
+}
+function canvasArchiveData(canvas){return canvas?canvas.toDataURL('image/png'):null}
+function blobArchiveData(blob){
+  return new Promise((resolve,reject)=>{
+    if(!blob)return resolve(null);
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(reader.error||new Error('音声を読み込めません'));
+    reader.readAsDataURL(blob);
+  });
+}
+function archiveDataToBlob(uri){
+  if(typeof uri!=='string'||!uri.startsWith('data:'))throw new Error('不正な音声データです');
+  const parts=uri.split(',');
+  if(parts.length!==2||!parts[0].includes(';base64'))throw new Error('不正な音声形式です');
+  const type=(parts[0].match(/^data:([^;]+)/)||[])[1]||'application/octet-stream';
+  const binary=atob(parts[1]);
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return new Blob([bytes],{type});
+}
+async function createBookArchive(){
+  // Ensure the active page's strokes are included in the snapshot.
+  saveCur();
+  const pages=[];
+  for(const sp of spreads){
+    const objects=sp.objs.map(o=>({
+      w:o.w,h:o.h,cx:o.cx,cy:o.cy,scale:o.scale,theta:o.theta,kind:o.kind||'image',
+      bitmap:canvasArchiveData(o.bmp)
+    }));
+    pages.push({
+      id:sp.id,type:sp.type,tint:{...sp.tint},
+      pageTimeMax:sp.pageTimeMax,playStart:sp.playStart,playEnd:sp.playEnd,
+      paint:canvasArchiveData(sp.paintOff),objects,
+      audioExt:sp.audioExt,
+      audio:await blobArchiveData(sp.audioBlob)
+    });
+  }
+  return {
+    app:'scd-ku/ehon',format:'ehon-project',version:1,
+    savedAt:new Date().toISOString(),
+    currentPage:cur,
+    pages,
+    stamps:stamps.map(st=>({bitmap:canvasArchiveData(st.img)})),
+    currentStampIndex,
+    events:actionLog.map(e=>({...e})),
+    pageLocalTime:spreads.map((sp,i)=>pageLocalTime[i+1]??sp.pageTimeMax??0)
+  };
+}
+async function archivedCanvas(src){
+  if(!src)return null;
+  const img=await decodeCanvasImage(src);
+  if(img.width>4096||img.height>4096||img.width*img.height>16777216)throw new Error('画像の解像度が大きすぎます');
+  const cv=document.createElement('canvas');
+  cv.width=img.naturalWidth;cv.height=img.naturalHeight;
+  cv.getContext('2d').drawImage(img,0,0);
+  return cv;
+}
+async function decodeBookArchive(data){
+  if(data?.format!=='ehon-project'||data.version!==1||!Array.isArray(data.pages)
+      ||data.pages.length<1||data.pages.length>200||!Array.isArray(data.stamps)
+      ||data.stamps.length>3000||!Array.isArray(data.events)||data.events.length>200000){
+    throw new Error('対応していない絵本データです');
+  }
+  const freshPages=[];
+  const allocatedURLs=[];
+  try{
+    for(const item of data.pages){
+      if(!['cover','normal','back'].includes(item.type)||
+         !Array.isArray(item.objects)||item.objects.length>3000)throw new Error('ページ情報が不正です');
+      const sp=newSpread(item.type);
+      if(typeof item.id==='string'&&item.id.length<100)sp.id=item.id;
+      sp.tint={color:item.tint?.color||'#ffffff',alpha:Math.min(1,Math.max(0,Number(item.tint?.alpha)||0))};
+      sp.pageTimeMax=Math.max(0,Number(item.pageTimeMax)||0);
+      sp.playStart=Math.max(0,Number(item.playStart)||0);
+      sp.playEnd=item.playEnd==null?null:Math.max(0,Number(item.playEnd)||0);
+      sp.paintOff=await archivedCanvas(item.paint);
+      for(const obj of item.objects){
+        const bmp=await archivedCanvas(obj.bitmap);
+        if(!bmp)throw new Error('画像の復元に失敗しました');
+        sp.objs.push({
+          bmp,w:bmp.width,h:bmp.height,
+          cx:Number(obj.cx)||0,cy:Number(obj.cy)||0,
+          scale:Number(obj.scale)||1,theta:Number(obj.theta)||0,
+          kind:obj.kind||'image'
+        });
+      }
+      if(item.audio){
+        sp.audioBlob=archiveDataToBlob(item.audio);
+        sp.audioURL=URL.createObjectURL(sp.audioBlob);
+        allocatedURLs.push(sp.audioURL);
+        sp.audioExt=item.audioExt||'.webm';
+      }
+      freshPages.push(sp);
+    }
+    const freshStamps=[];
+    for(const st of data.stamps){
+      const bmp=await archivedCanvas(st.bitmap);
+      if(bmp)freshStamps.push({img:bmp,w:bmp.width,h:bmp.height});
+    }
+    const seenIDs=new Set();
+    for(const sp of freshPages){if(seenIDs.has(sp.id))sp.id='spread-'+(nextSpreadID++);seenIDs.add(sp.id)}
+    return {pages:freshPages,stamps:freshStamps};
+  }catch(e){allocatedURLs.forEach(url=>URL.revokeObjectURL(url));throw e}
+}
+function downloadArchive(blob,filename){
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),20000);
+}
+projectSaveBtn.onclick=async()=>{
+  if(projectBusy)return;
+  if(activeRecording||permissionPending){alert('録音を停止してから作品を保存してください。');return}
+  if(fs.classList.contains('show')){alert('読み聞かせを閉じてから保存してください。');return}
+  setProjectBusy(true);setProjectStatus('絵・音声・制作履歴をまとめています…');
+  try{
+    const archive=await createBookArchive();
+    const blob=new Blob([JSON.stringify(archive)],{type:'application/json'});
+    downloadArchive(blob,'ehon_'+new Date().toISOString().slice(0,10)+'.ehon');
+    setProjectStatus('作品を保存しました（'+(blob.size/1024/1024).toFixed(1)+' MB）');
+  }catch(e){console.error('作品保存エラー',e);alert('作品の保存に失敗しました。');setProjectStatus('保存失敗')}
+  finally{setProjectBusy(false)}
+};
+projectLoadBtn.onclick=()=>{
+  if(projectBusy)return;
+  if(activeRecording||permissionPending){alert('録音を停止してから作品を開いてください。');return}
+  projectFileInput.value='';
+  projectFileInput.click();
+};
+projectFileInput.onchange=async()=>{
+  const file=projectFileInput.files?.[0];
+  if(!file||projectBusy)return;
+  if(file.size>150*1024*1024){alert('150MBを超えるファイルには対応していません。');return}
+  if(!confirm('現在の作品を保存済みですか？\n作品を読み込むと現在の編集内容が入れ替わります。'))return;
+  setProjectBusy(true);setProjectStatus('作品を読み込んでいます…');
+  try{
+    const data=JSON.parse(await file.text());
+    const unpacked=await decodeBookArchive(data); // 全画像と音声が正常なときだけ差し替える
+    stopPageLogReplay();stopPreviewAudio();stopCurrentAudio();
+    if(autoPlaying)stopAutoPlay(false);
+    for(const sp of spreads)if(sp.audioURL)URL.revokeObjectURL(sp.audioURL);
+    spreads=unpacked.pages;
+    stamps.length=0;stamps.push(...unpacked.stamps);
+    currentStampIndex=Math.min(stamps.length-1,Math.max(-1,Number(data.currentStampIndex)||0));
+    actionLog.splice(0,actionLog.length,...data.events);
+    importedLogTimeOffset=Math.max(0,...data.events.map(e=>Number(e.time_sec)||0))+1;
+    sceneFrameCache.clear();
+    for(const obj of Object.keys(pageLocalTime))delete pageLocalTime[obj];
+    for(const obj of Object.keys(pageLastGlobalTime))delete pageLastGlobalTime[obj];
+    for(const obj of Object.keys(pageNextTimeOverride))delete pageNextTimeOverride[obj];
+    spreads.forEach((sp,i)=>{
+      historyMap.set(sp,[]);
+      pageLocalTime[i+1]=Number(data.pageLocalTime?.[i])||sp.pageTimeMax||0;
+    });
+    // Ensure any newly inserted pages won't collide with imported identifiers.
+    nextSpreadID=Math.max(nextSpreadID,spreads.length+1)+100;
+    renderStampPanel();
+    sel=-1;mode='draw';erasing=false;
+    cur=Math.min(spreads.length-1,Math.max(0,Number(data.currentPage)||0));
+    loadSpread(cur);updateToolHighlights();
+    setProjectStatus('作品を開きました：'+spreads.length+'ページ、音声と制作過程を復元');
+  }catch(e){console.error('作品読み込みエラー',e);alert('作品を読み込めませんでした：'+e.message);setProjectStatus('読み込み失敗')}
+  finally{setProjectBusy(false)}
+};
+projectReplayBtn.onclick=async()=>{
+  if(projectBusy)return;
+  if(activeRecording||permissionPending){alert('録音を停止してから再生してください。');return}
+  setProjectBusy(true);setProjectStatus('制作過程の再生を準備しています…');
+  try{
+    await prepareArchiveFrames();
+    fsMode='log';
+    openFS();
+    startAutoPlay();
+    setProjectStatus('制作過程＋ページ音声を再生中');
+  }catch(e){console.error('作品再生エラー',e);alert('作品を再生できませんでした。');setProjectStatus('再生失敗')}
+  finally{setProjectBusy(false)}
+};
+
 /* ========= ★ 操作ログCSV 保存 ========= */
 const saveLogBtn = document.getElementById('saveLog');
 saveLogBtn.onclick = () => {
@@ -5457,6 +5748,8 @@ saveLogBtn.onclick = () => {
       <li>カメラ／画像からのなげなわ切り抜き</li>
       <li>見開きページの追加・削除</li>
       <li>ページ別の音声録音、試聴、削除・再録音、音声ファイル保存と読み聞かせでの再生</li>
+      <li>「作品を保存」で絵・写真・録音・操作過程を1つの .ehon ファイルとして保存し、「作品を開く」で復元できます。</li>
+      <li>「作品を再生」では表紙から制作過程と各ページの音声を自動再生します。</li>
       <li>全画面の読み聞かせ表示と、絵本全体のPDF保存</li>
     </ul>
 
@@ -5468,6 +5761,7 @@ saveLogBtn.onclick = () => {
       <li>必要に応じてカメラ／なげなわ切り抜きやスタンプを使います。</li>
       <li>ページ追加ボタンで見開きを増やし、ページごとにマイクから録音し、停止ボタンで確定します。録音済みなら同じマイクボタンで再録音、ゴミ箱ボタンで音声だけを削除できます。</li>
       <li>読み聞かせモードで「前」「次」を押すと、そのページの録音が再生されます。「♪ 音声再生」で聞き直すこともできます。</li>
+      <li>作品を後から編集・再生するには「作品を保存」→ .ehon ファイルを保管 →「作品を開く」→「作品を再生」の順に操作します。PDFは静止画像だけを保存する形式です。</li>
       <li>完成したら全画面で読み聞かせを確認し、PDFとして保存できます。</li>
     </ol>
 
