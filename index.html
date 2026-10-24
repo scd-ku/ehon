@@ -5,6 +5,7 @@
 <title>えほんノート</title>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script>
 
 <style>
 :root{
@@ -309,6 +310,30 @@ canvas{display:block;touch-action:none}
 #projectTools .btn:disabled{opacity:.45}
 @media(max-width:720px){#projectTools{justify-content:flex-start}#projectTools .btn{font-size:12px;padding:8px 10px}#projectStatus{flex-basis:100%;margin-left:0}}
 
+#bookShareOverlay[hidden],.book-share-panel[hidden]{display:none !important}
+#bookShareOverlay{
+  position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.60);
+  display:flex;align-items:center;justify-content:center;padding:16px;
+}
+.book-share-card{
+  width:min(100%,520px);max-height:93dvh;overflow:auto;
+  background:#fff;color:#222;border-radius:18px;
+  padding:20px 22px 24px;box-shadow:0 20px 70px #0005;
+}
+.book-share-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.book-share-head h2{margin:0;font-size:20px}
+.book-share-head button{font-size:23px;background:transparent;border:0;cursor:pointer}
+.book-share-panel{display:flex;flex-direction:column;align-items:center;gap:13px}
+.book-share-panel p{margin:0;line-height:1.6;font-size:14px}
+.book-share-note{color:#525a60;font-size:13px !important}
+#bookShareQR{display:flex;align-items:center;justify-content:center;min-height:260px;background:#fff}
+#bookShareQR img,#bookShareQR canvas{max-width:100%;height:auto}
+.book-share-status{padding:9px 12px;background:#f0f4f6;width:100%;border-radius:8px;font-size:13px;overflow-wrap:anywhere}
+.book-share-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:9px}
+.book-share-actions .btn{font-size:14px}
+.book-share-link{font-size:12px;line-height:1.4;overflow-wrap:anywhere;text-align:center}
+.book-share-success{background:#e7f4ec}
+@media(max-width:720px){.book-share-card{padding:15px 14px}.book-share-head h2{font-size:17px}}
 /* カメラモーダル＋なげなわ＋映像設定 */
 #camModal{
   position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:250;
@@ -795,6 +820,10 @@ canvas{display:block;touch-action:none}
   <button id="loadProject" class="btn" title="保存済みの .ehon 作品を読み込む">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10l4 4v12H5zM15 4v4h4M12 11v7m-3-3 3 3 3-3"/></svg>
     作品を開く
+  </button>
+  <button id="shareBook" class="btn" title="iPhone・Androidへ作品をQRコードで転送">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM5 5h3v3H5zM14 3h7v7h-7zM16 5h3v3h-3zM3 14h7v7H3zM5 16h3v3H5zM14 14h3M20 14v3M14 17v4M17 20h4M20 19v2"/></svg>
+    QRで共有
   </button>
   <button id="replayProject" class="btn" title="表紙から描画の過程と各ページの録音を続けて再生">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14l12-7z"/><path d="M20 7v10"/></svg>
@@ -5798,6 +5827,385 @@ saveLogBtn.onclick = () => {
 
 </script>
 
+<!-- クロスデバイス転送：QRは受信ページへの接続情報のみ。作品はWebRTCで送信 -->
+<div id="bookShareOverlay" role="dialog" aria-modal="true" aria-labelledby="bookShareTitle" hidden>
+  <div class="book-share-card">
+    <div class="book-share-head">
+      <h2 id="bookShareTitle">絵本をQRコードで共有</h2>
+      <button id="bookShareClose" type="button" aria-label="閉じる">×</button>
+    </div>
+    <div id="bookShareSend" class="book-share-panel">
+      <p class="book-share-note">このQRを読み取ると、iPhone・Android・パソコンで作品を受信できます。絵・写真・録音・制作過程を転送します。</p>
+      <div id="bookShareQR" role="img" aria-label="作品受信用リンクのQRコード"></div>
+      <a id="bookShareURL" class="book-share-link" href="#" target="_blank" rel="noopener noreferrer"></a>
+      <div id="bookShareSendStatus" class="book-share-status" role="status" aria-live="polite">共有の準備中です…</div>
+      <div class="book-share-actions">
+        <button id="bookShareCopy" class="btn" type="button" disabled>リンクをコピー</button>
+        <button id="bookShareStop" class="btn" type="button" disabled>共有を終了</button>
+      </div>
+      <p class="book-share-note">※ 受信が終わるまで、この端末でアプリを開いたままにしてください。QRのリンクは一時的なものです。受信側で「端末に保存」すると、共有元を閉じても後から作品を開けます。</p>
+    </div>
+    <div id="bookShareReceive" class="book-share-panel" hidden>
+      <p class="book-share-note">共有元がQRを表示している間に「受信を開始」を押してください。音声や制作過程もまとめて届きます。</p>
+      <div id="bookShareReceiveStatus" class="book-share-status" role="status" aria-live="polite">受信を開始してください。</div>
+      <div class="book-share-actions">
+        <button id="bookShareReceiveStart" class="btn" type="button">受信を開始</button>
+        <button id="bookShareReceiveSave" class="btn" type="button" disabled>端末に保存（.ehon）</button>
+        <button id="bookShareReceiveOpen" class="btn" type="button" disabled>作品を開く</button>
+        <button id="bookShareReceivePlay" class="btn" type="button" disabled>開いて再生</button>
+      </div>
+      <p class="book-share-note">「端末に保存」したファイルは、後日このアプリの「作品を開く」から再生できます。iPhoneでは「ファイル」、Androidでは「ダウンロード」に保存されます（端末の設定で場所は異なります）。</p>
+    </div>
+  </div>
+</div>
+
+
+<script>
+/* 複数端末間の一時的な共有。静的なGitHub Pagesでも作品を受け渡せる。
+   PeerJS Cloud は接続の仲介、作品データはWebRTCデータチャネルで直接送る。
+   QRのリンクはサーバーに保存される永続的な作品URLではない。 */
+(() => {
+  const $=id=>document.getElementById(id);
+  const overlay=$('bookShareOverlay');
+  const sendPanel=$('bookShareSend');
+  const receivePanel=$('bookShareReceive');
+  const sendStatus=$('bookShareSendStatus');
+  const receiveStatus=$('bookShareReceiveStatus');
+  const qrBox=$('bookShareQR');
+  const copyBtn=$('bookShareCopy');
+  const stopBtn=$('bookShareStop');
+  const beginBtn=$('bookShareReceiveStart');
+  const saveBtn=$('bookShareReceiveSave');
+  const openBtn=$('bookShareReceiveOpen');
+  const playBtn=$('bookShareReceivePlay');
+  const SHARE_PREFIX='ehon-';
+  const ID_REGEX=/^ehon-[0-9a-f]{32}$/i;
+  const CHUNK_SIZE=12000;
+  const BATCH_SIZE=8;
+  const MAX_CHARACTERS=60*1024*1024;
+  const MAX_FILE_BYTES=90*1024*1024;
+  let sourcePeer=null,sourceJson=null,sourceUrl=null,sourceConnections=new Set();
+  let sourceStarting=false,sourceCounter=0;
+  let receiverPeer=null,receiverConn=null,receivedText=null,receivedArchive=null;
+  let receiving=false,receiverToken=0,receivedFilename='shared_ehon.ehon';
+  const queryPeer=new URLSearchParams(location.search).get('receive');
+  const senderPeerId=ID_REGEX.test(queryPeer||'')?queryPeer:null;
+
+  function status(el,message){el.textContent=message}
+  function show(mode){
+    overlay.hidden=false;
+    sendPanel.hidden=mode!=='send';
+    receivePanel.hidden=mode!=='receive';
+    $('bookShareTitle').textContent=mode==='send'?'絵本をQRコードで共有':'共有された絵本を受信';
+    document.body.style.overflow='hidden';
+  }
+  function hide(){
+    overlay.hidden=true;
+    document.body.style.overflow='';
+  }
+  function randomShareId(){
+    const bits=new Uint8Array(16);
+    crypto.getRandomValues(bits);
+    return SHARE_PREFIX+Array.from(bits,x=>x.toString(16).padStart(2,'0')).join('');
+  }
+  function makeShareUrl(id){
+    const url=new URL(location.href);
+    url.search='';
+    url.hash='';
+    url.searchParams.set('receive',id);
+    return url.toString();
+  }
+  function renderQR(url){
+    qrBox.textContent='';
+    if(window.QRCode){
+      new QRCode(qrBox,{text:url,width:256,height:256,
+        colorDark:'#171717',colorLight:'#ffffff',
+        correctLevel:QRCode.CorrectLevel.M});
+    }else{
+      // QR CDN 不達でも、テキストの共有リンクから受信できる
+      const note=document.createElement('p');
+      note.textContent='QR生成ライブラリを読み込めません。下のリンクをコピーして共有してください。';
+      qrBox.appendChild(note);
+    }
+  }
+  function stopShare(){
+    for(const conn of sourceConnections){try{conn.close()}catch(_){}}
+    sourceConnections.clear();
+    try{sourcePeer?.destroy()}catch(_){}
+    sourcePeer=null;sourceJson=null;sourceUrl=null;
+    stopBtn.disabled=true;copyBtn.disabled=true;
+    qrBox.textContent='';
+    $('bookShareURL').textContent='';
+    $('bookShareURL').removeAttribute('href');
+    status(sendStatus,'共有を終了しました。もう一度「QRで共有」を押すと新しいQRを作れます。');
+  }
+  function sendBatch(conn,session){
+    if(!conn.open||session.sent>=session.total)return;
+    const end=Math.min(session.sent+BATCH_SIZE,session.total);
+    try{
+      for(let i=session.sent;i<end;i++){
+        const from=i*CHUNK_SIZE;
+        conn.send({t:'chunk',i,text:sourceJson.slice(from,from+CHUNK_SIZE)});
+      }
+      session.sent=end;
+      status(sendStatus,'作品を送信中：'+Math.round(100*end/session.total)+'%（'+(sourceCounter+1)+'件目）');
+    }catch(e){
+      console.error('転送失敗',e);
+      status(sendStatus,'送信が中断されました。相手の端末で再試行してください。');
+      conn.close();
+    }
+  }
+  function acceptIncoming(conn){
+    if(sourceConnections.size>=4){
+      conn.on('open',()=>{conn.send({t:'error',message:'現在の転送が混雑しています。少し後に再試行してください。'});conn.close()});
+      return;
+    }
+    sourceConnections.add(conn);
+    const session={state:'new',sent:0,total:Math.ceil(sourceJson.length/CHUNK_SIZE)};
+    conn.on('data',msg=>{
+      if(!msg||typeof msg!=='object'||!sourceJson)return;
+      if(msg.t==='request'&&session.state==='new'){
+        session.state='metadata';
+        conn.send({t:'meta',protocol:1,total:session.total,characters:sourceJson.length,
+                   filename:'ehon_shared_'+new Date().toISOString().slice(0,10)+'.ehon',
+                   bytes:new Blob([sourceJson]).size});
+      }else if(msg.t==='ready'&&session.state==='metadata'){
+        session.state='streaming';
+        sendBatch(conn,session);
+      }else if(msg.t==='ack'&&session.state==='streaming'){
+        if(!Number.isInteger(msg.next)||msg.next!==session.sent)return;
+        sendBatch(conn,session);
+      }else if(msg.t==='complete'&&session.state==='streaming'){
+        session.state='done';
+        sourceCounter++;
+        status(sendStatus,'送信完了：'+sourceCounter+'台に作品を届けました。QRは続けて使えます。');
+        conn.close();
+      }
+    });
+    conn.on('error',e=>console.warn('受信端末との接続エラー',e));
+    conn.on('close',()=>sourceConnections.delete(conn));
+  }
+  async function startShare(){
+    show('send');
+    if(sourcePeer&&!sourcePeer.destroyed&&sourceUrl){
+      renderQR(sourceUrl);status(sendStatus,'共有中です。QRを受け取る端末で読み取ってください。');
+      return;
+    }
+    if(sourceStarting)return;
+    if(!window.Peer){
+      status(sendStatus,'端末間通信を読み込めません。通信状態を確認して再読み込みしてください。');
+      return;
+    }
+    if(activeRecording||permissionPending){
+      status(sendStatus,'録音を停止してから共有してください。');return;
+    }
+    if(projectBusy||fs.classList.contains('show')){
+      status(sendStatus,'作品の保存や読み聞かせが終わってから共有してください。');return;
+    }
+    sourceStarting=true;
+    copyBtn.disabled=true;stopBtn.disabled=true;
+    status(sendStatus,'絵・音声・制作過程を共有用に準備しています…');
+    try{
+      if(isPageLogPlaying)stopPageLogReplay();
+      const archive=await createBookArchive();
+      sourceJson=JSON.stringify(archive);
+      if(sourceJson.length>MAX_CHARACTERS||
+         new Blob([sourceJson]).size>MAX_FILE_BYTES){
+        sourceJson=null;
+        throw new Error('作品が大きすぎます。「作品を保存」で .ehon ファイルに保存し、クラウドストレージなどで共有してください。');
+      }
+      status(sendStatus,'端末間の接続を準備しています…');
+      const peer=new Peer(randomShareId());
+      sourcePeer=peer;
+      peer.on('open',id=>{
+        if(sourcePeer!==peer)return;
+        sourceUrl=makeShareUrl(id);
+        renderQR(sourceUrl);
+        const link=$('bookShareURL');
+        link.href=sourceUrl;
+        link.textContent=sourceUrl;
+        copyBtn.disabled=false;stopBtn.disabled=false;
+        status(sendStatus,'共有準備完了。相手の端末でQRを読み取り、「受信を開始」を押してください。');
+      });
+      peer.on('connection',conn=>{
+        if(sourcePeer===peer&&sourceJson)acceptIncoming(conn);
+        else conn.close();
+      });
+      peer.on('error',e=>{
+        console.error('共有接続エラー',e);
+        status(sendStatus,'接続できませんでした。ネットワークを確認し、共有を終了して再試行してください。');
+      });
+      peer.on('disconnected',()=>{
+        status(sendStatus,'接続サーバーと切断されました。共有を終了してから再試行してください。');
+      });
+    }catch(e){
+      console.error(e);
+      status(sendStatus,'共有の準備に失敗：'+(e.message||e));
+      try{sourcePeer?.destroy()}catch(_){}
+      sourcePeer=null;sourceJson=null;
+    }finally{sourceStarting=false}
+  }
+
+  function stopReceiver(){
+    receiverToken++;
+    try{receiverConn?.close()}catch(_){}
+    try{receiverPeer?.destroy()}catch(_){}
+    receiverPeer=null;receiverConn=null;receiving=false;
+    beginBtn.disabled=false;
+  }
+  function receiveError(msg){
+    status(receiveStatus,msg);
+    stopReceiver();
+  }
+  function receiveComplete(text,filename){
+    try{
+      const data=JSON.parse(text);
+      if(data.format!=='ehon-project'||data.version!==1
+        ||!Array.isArray(data.pages)||!Array.isArray(data.events))throw new Error('不正な絵本データです');
+      receivedArchive=data;
+      receivedText=text;
+      receivedFilename=/^ehon_[a-z0-9-]+\.ehon$/i.test(filename||'')?filename:'shared_ehon.ehon';
+      saveBtn.disabled=false;openBtn.disabled=false;playBtn.disabled=false;
+      receiveStatus.classList.add('book-share-success');
+      status(receiveStatus,'受信完了！ '+data.pages.length+'ページを受け取りました。「端末に保存」しておくと、後日も読み聞かせできます。');
+      try{receiverConn?.send({t:'complete'})}catch(_){}
+      // Connection no longer required once all data have been reconstructed.
+      stopReceiver();
+    }catch(e){
+      receiveError('作品の検証に失敗しました。もう一度受信してください。');
+    }
+  }
+  function onReceivePacket(conn,session,msg,token){
+    if(token!==receiverToken||!msg||typeof msg!=='object')return;
+    if(msg.t==='error'){receiveError(String(msg.message||'送信側に接続できません'));return}
+    if(msg.t==='meta'&&!session.metadata){
+      if(msg.protocol!==1||!Number.isInteger(msg.total)||!Number.isInteger(msg.characters)
+       ||msg.characters<1||msg.characters>MAX_CHARACTERS
+       ||msg.total!==Math.ceil(msg.characters/CHUNK_SIZE)
+       ||msg.bytes>MAX_FILE_BYTES){
+        receiveError('受信できない作品サイズまたは形式です。');return;
+      }
+      session.metadata=msg;
+      session.chunks=[];
+      session.next=0;
+      conn.send({t:'ready'});
+      status(receiveStatus,'作品を受信中：0%');
+    }else if(msg.t==='chunk'&&session.metadata){
+      if(!Number.isInteger(msg.i)||msg.i!==session.next||typeof msg.text!=='string'
+         ||msg.text.length>CHUNK_SIZE){
+        receiveError('転送データに誤りがありました。再受信してください。');return;
+      }
+      session.chunks.push(msg.text);
+      session.next++;
+      status(receiveStatus,'作品を受信中：'+Math.round(session.next/session.metadata.total*100)+'%');
+      if(session.next%BATCH_SIZE===0||session.next===session.metadata.total){
+        if(session.next===session.metadata.total){
+          const text=session.chunks.join('');
+          if(text.length!==session.metadata.characters){
+            receiveError('受信データのサイズが一致しません。');return;
+          }
+          receiveComplete(text,session.metadata.filename);
+        }else{
+          conn.send({t:'ack',next:session.next});
+        }
+      }
+    }
+  }
+  function startReceiving(){
+    if(!senderPeerId){
+      status(receiveStatus,'有効な共有QRではありません。共有元にQRを作り直してもらってください。');
+      return;
+    }
+    if(!window.Peer){
+      status(receiveStatus,'端末間通信を読み込めません。ネットワークを確認してください。');
+      return;
+    }
+    stopReceiver();
+    receivedText=null;receivedArchive=null;
+    receiveStatus.classList.remove('book-share-success');
+    saveBtn.disabled=true;openBtn.disabled=true;playBtn.disabled=true;
+    beginBtn.disabled=true;
+    status(receiveStatus,'共有元の端末と接続しています…');
+    const token=++receiverToken;
+    receiving=true;
+    try{
+      const peer=new Peer();
+      receiverPeer=peer;
+      peer.on('open',()=>{
+        if(token!==receiverToken)return;
+        const conn=peer.connect(senderPeerId,{serialization:'json',reliable:true});
+        receiverConn=conn;
+        const session={metadata:null,chunks:null,next:0};
+        conn.on('open',()=>{
+          if(token!==receiverToken)return;
+          conn.send({t:'request',protocol:1});
+        });
+        conn.on('data',msg=>onReceivePacket(conn,session,msg,token));
+        conn.on('error',e=>{
+          console.error('受信接続エラー',e);
+          if(token===receiverToken)receiveError('通信エラーが発生しました。共有元の画面を確認して再試行してください。');
+        });
+        conn.on('close',()=>{
+          if(token===receiverToken&&receiving){
+            receiveError('送信元との接続が切れました。もう一度お試しください。');
+          }
+        });
+      });
+      peer.on('error',e=>{
+        console.error('受信接続エラー',e);
+        if(token===receiverToken)receiveError('共有元に接続できません。QRが有効で、共有元の画面が開いているか確認してください。');
+      });
+    }catch(e){console.error(e);receiveError('この端末では受信を開始できませんでした。')}
+  }
+  async function applyReceived(play){
+    if(!receivedArchive||projectBusy)return;
+    const hasEdits=actionLog.length>0||spreads.some(sp=>sp.objs.length||sp.audioBlob);
+    if(hasEdits&&!confirm('現在の作品と入れ替えます。保存済みですか？'))return;
+    setProjectBusy(true);
+    status(receiveStatus,'作品を開いています…');
+    try{
+      await applyBookArchiveData(receivedArchive);
+      hide();
+      if(play)projectReplayBtn.click();
+    }catch(e){
+      console.error('受信作品の読込失敗',e);
+      status(receiveStatus,'この作品を開けませんでした：'+e.message);
+    }finally{setProjectBusy(false)}
+  }
+
+  $('shareBook').addEventListener('click',startShare);
+  $('bookShareStop').addEventListener('click',stopShare);
+  $('bookShareCopy').addEventListener('click',async()=>{
+    if(!sourceUrl)return;
+    try{await navigator.clipboard.writeText(sourceUrl);status(sendStatus,'共有リンクをコピーしました。')}
+    catch(_){prompt('このリンクをコピーしてください',sourceUrl)}
+  });
+  $('bookShareClose').addEventListener('click',hide);
+  beginBtn.addEventListener('click',startReceiving);
+  saveBtn.addEventListener('click',()=>{
+    if(!receivedText)return;
+    // User click is required for iOS Safari and Android download permissions.
+    downloadArchive(new Blob([receivedText],{type:'application/json'}),receivedFilename);
+    status(receiveStatus,'保存を開始しました。端末の「ファイル」や「ダウンロード」を確認してください。');
+  });
+  openBtn.addEventListener('click',()=>applyReceived(false));
+  playBtn.addEventListener('click',()=>applyReceived(true));
+  window.addEventListener('beforeunload',()=>{
+    try{sourcePeer?.destroy()}catch(_){}
+    try{receiverPeer?.destroy()}catch(_){}
+  });
+  // QRで開いた端末は受信用パネルを提示する（受信開始はユーザーの操作）
+  if(senderPeerId){
+    show('receive');
+    status(receiveStatus,'共有作品の受信準備ができました。「受信を開始」を押してください。');
+  }else if(queryPeer){
+    show('receive');
+    status(receiveStatus,'有効な共有QRではありません。新しいQRを読み取ってください。');
+    beginBtn.disabled=true;
+  }
+})();
+</script>
+
 <!-- QR / Help -->
 <div id="qrInfoModal" class="app-info-modal" role="dialog" aria-modal="true" aria-labelledby="qrInfoTitle">
   <div class="app-info-card">
@@ -5823,6 +6231,7 @@ saveLogBtn.onclick = () => {
       <li>見開きページの追加・削除</li>
       <li>ページ別の音声録音、試聴、削除・再録音、音声ファイル保存と読み聞かせでの再生</li>
       <li>「作品を保存」で絵・写真・録音・操作過程を1つの .ehon ファイルとして保存し、「作品を開く」で復元できます。</li>
+      <li>「QRで共有」でiPhoneやAndroidと作品を直接転送できます。受信者はQRを読み取り「受信を開始」→「端末に保存」または「開いて再生」を選びます。受信完了まで共有元のアプリを開いたままにしてください。</li>
       <li>「作品を再生」では表紙から制作過程と各ページの音声を自動再生します。</li>
       <li>全画面の読み聞かせ表示と、絵本全体のPDF保存</li>
     </ul>
