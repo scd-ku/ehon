@@ -5134,6 +5134,12 @@ document.addEventListener('keydown',(e)=>{
   const mod=e.ctrlKey || e.metaKey;
   const k=(e.key||'').toLowerCase();
 
+  // Cmd/Ctrl+S は従来の「画像切り取り」ではなく、作品全体を保存する
+  if(mod && k==='s'){
+    e.preventDefault();
+    document.getElementById('saveProject')?.click();
+    return;
+  }
   // ★ Ctrl(⌘)+Z … 1つ前にもどす（Undo）
   if(mod && k==='z'){
     e.preventDefault();
@@ -5144,14 +5150,14 @@ document.addEventListener('keydown',(e)=>{
     return;
   }
 
-  if(mod && (k==='c' || k==='v' || k==='s' || k==='x')){
+  if(mod && (k==='c' || k==='v' || k==='x')){
     if(k==='c'){
       if(!hasSel) return;
       e.preventDefault(); copyObjAt(sel);
     }else if(k==='v'){
       if(!clipboardTemplate) return;
       e.preventDefault(); hideImgMenu(); pasteFromClipboard(null);
-    }else{ // s / x = 切り取り
+    }else{ // x = 切り取り
       if(!hasSel) return;
       e.preventDefault(); hideImgMenu(); cutObjAt(sel);
     }
@@ -5679,8 +5685,9 @@ projectSaveBtn.onclick=async()=>{
     if(isPageLogPlaying)stopPageLogReplay();
     const archive=await createBookArchive();
     const blob=new Blob([JSON.stringify(archive)],{type:'application/json'});
-    downloadArchive(blob,'ehon_'+new Date().toISOString().slice(0,10)+'.ehon');
-    setProjectStatus('作品を保存しました（'+(blob.size/1024/1024).toFixed(1)+' MB）');
+    const timestamp=new Date().toISOString().slice(0,16).replace(/[T:]/g,'-');
+    downloadArchive(blob,'ehon_'+timestamp+'.ehon');
+    setProjectStatus('作品ファイルのダウンロードを開始しました（'+(blob.size/1024/1024).toFixed(1)+' MB）');
   }catch(e){console.error('作品保存エラー',e);alert('作品の保存に失敗しました。');setProjectStatus('保存失敗')}
   finally{setProjectBusy(false)}
 };
@@ -5717,7 +5724,11 @@ projectFileInput.onchange=async()=>{
       pageLocalTime[i+1]=Number(data.pageLocalTime?.[i])||sp.pageTimeMax||0;
     });
     // Ensure any newly inserted pages won't collide with imported identifiers.
-    nextSpreadID=Math.max(nextSpreadID,spreads.length+1)+100;
+    nextSpreadID=Math.max(
+      nextSpreadID,
+      spreads.length+1,
+      ...spreads.map(sp=>Number(/^spread-(\d+)$/.exec(sp.id)?.[1])||0)
+    )+1;
     renderStampPanel();
     sel=-1;mode='draw';erasing=false;
     cur=Math.min(spreads.length-1,Math.max(0,Number(data.currentPage)||0));
@@ -5815,6 +5826,7 @@ saveLogBtn.onclick = () => {
       <li>ページ追加ボタンで見開きを増やし、ページごとにマイクから録音し、停止ボタンで確定します。録音済みなら同じマイクボタンで再録音、ゴミ箱ボタンで音声だけを削除できます。</li>
       <li>読み聞かせモードで「前」「次」を押すと、そのページの録音が再生されます。「♪ 音声再生」で聞き直すこともできます。</li>
       <li>作品を後から編集・再生するには「作品を保存」→ .ehon ファイルを保管 →「作品を開く」→「作品を再生」の順に操作します。PDFは静止画像だけを保存する形式です。</li>
+      <li>PCでは Ctrl／⌘ ＋ S でも作品を保存できます。保存・読み込みに使用する .ehon ファイルはアプリ専用です。通常の動画プレイヤーで見る場合は読み聞かせモードの動画保存をご利用ください。</li>
       <li>完成したら全画面で読み聞かせを確認し、PDFとして保存できます。</li>
     </ol>
 
