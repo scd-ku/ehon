@@ -740,8 +740,12 @@ canvas{display:block;touch-action:none}
       <rect x="5" y="15" width="14" height="4" rx="1.5"></rect>
     </svg>
   </button>
-  <button id="fsOpen" class="btn icon" title="本と音波：全画面読み聞かせモード" aria-label="本と音波：全画面読み聞かせモード">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7c-3-2-6-2-9-1v13c3-1 6-1 9 1 3-2 6-2 9-1V6c-3-1-6-1-9 1Z"/><path d="M12 7v13M16 9c1.5 2 1.5 4 0 6M18.8 7.5c2.5 3 2.5 6 0 9"/></svg>
+  <button id="fsOpen" class="btn icon" title="絵本の読み聞かせ：本と音声を再生" aria-label="絵本の読み聞かせ：本と音声を再生">
+    <svg viewBox="0 0 32 32" aria-hidden="true" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.5 8C9.9 6.2 6.9 6 3 7v17c4-1.2 7.2-.7 9.5 1.1 2.5-1.8 5.5-2.2 9-1.1V7c-3.5-1-6.6-.8-9 1Z"/>
+      <path d="M12.5 8v17.1M5.6 10.5c1.5-.3 2.9-.1 4.2.5M5.6 14.2c1.5-.3 2.9-.1 4.2.5"/>
+      <path d="M23.8 11.7c2.1 2.1 2.1 5.5 0 7.6M26.7 8.7c3.8 3.8 3.8 9.7 0 13.5" stroke-width="2.2"/>
+    </svg>
   </button>
 
   <button id="savePdf" class="btn icon primary" title="用紙と下矢印：絵本をPDFで保存" aria-label="用紙と下矢印：絵本をPDFで保存">
@@ -2584,16 +2588,16 @@ function line(x1,y1,x2,y2,targetCtx){
   }
 
   if(erasing){
-    const step=Math.max(1,penSize*0.32);
-    const len=Math.hypot(x2-x1,y2-y1)||1;
     ctx.globalCompositeOperation='destination-out';
-    for(let d=0;d<=len;d+=step){
-      const px=x1+(x2-x1)/len*d, py=y1+(y2-y1)/len*d;
-      ctx.beginPath(); ctx.arc(px,py,penSize*0.5,0,Math.PI*2);
-      ctx.fill();
-      // ★ 画像にも同じ位置で消しゴム
-      eraseOnObjects(px, py, penSize*0.5);
+    ctx.fillStyle='#000';ctx.strokeStyle='#000';
+    if(Math.hypot(x2-x1,y2-y1)<0.01){
+      ctx.beginPath();ctx.arc(x1,y1,penSize*0.5,0,Math.PI*2);ctx.fill();
+    }else{
+      ctx.lineWidth=penSize;ctx.lineCap='round';ctx.lineJoin='round';
+      ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
     }
+    // オブジェクトは必要なときだけ、線分あたり1回の消去処理にする。
+    eraseOnObjectsSegment(x1,y1,x2,y2,penSize*0.5);
     ctx.globalCompositeOperation='source-over';
   }else{
     if(brushMode==='watercolor'){
@@ -2616,6 +2620,7 @@ function line(x1,y1,x2,y2,targetCtx){
 
 
 let isDraw=false,lx=0,ly=0;
+let eraserStrokeMoved=false;
 let drawPressure = 0.5;
 let drawSpeed = 0.0; // px/ms
 let lastMoveTS = 0;
@@ -2748,6 +2753,7 @@ function getPressureFromEvent(e){
 function dStart(e){
   if(e.touches && e.touches.length>1) return;
   isDraw=true;
+  eraserStrokeMoved=false;
   const p=pos(paintCvs,e);
   lx=p.x; ly=p.y;
 
@@ -2788,6 +2794,7 @@ function dMove(e){
 
   // 実際の描画（★ 消しゴム以外は一筆キャンバスに描いて画面に合成）
   if(erasing){
+    eraserStrokeMoved=true;
     line(x1, y1, x2, y2);
   }else{
     const r = expandStrokeBox(x1, y1, x2, y2);
@@ -2819,8 +2826,15 @@ function dMove(e){
 }
 
 function dEnd(e){
-  if(!isDraw) return;
+  if(!isDraw)return;
   isDraw=false;
+  // iPadの指でトントン触れて消す場合、touchmoveが発生しないことがある。
+  if(erasing&&!eraserStrokeMoved){
+    line(lx,ly,lx,ly);
+    redrawObjs();
+    logAction('drawMove',{page:cur+1,x1:lx,y1:ly,x2:lx,y2:ly,
+      color:penColor,size:penSize,mode:brushMode,erasing:true});
+  }
   finishStrokeAsObject();   // ★ 一筆をオブジェクトにする
   logAction('drawEnd',{page:cur+1,x:+lx.toFixed(1),y:+ly.toFixed(1)});
 }
@@ -2899,26 +2913,36 @@ function newBmpCanvas(w, h){
   return c;
 }
 
-/* ★ 画像オブジェクトに対する消しゴム処理 */
-function eraseOnObjects(cx, cy, r){
-  const sp = spreads[cur];
-  if (!sp || !sp.objs.length) return;
-
-  for (const o of sp.objs){
-    // 世界座標 → オブジェクト座標
-    const lp = local(o, cx, cy);      // 中心が (0,0)、単位は画像px
-    const radiusLocal = r / o.scale;  // スケールを戻す
-    const imgX = lp.x + o.w / 2;
-    const imgY = lp.y + o.h / 2;
-
-    const ctx = o.bmp.getContext('2d');
+/* ペン線・写真を連続した一筆で消す。ヒットしないオブジェクトは処理しない。
+   大量のストロークがあるiPadでも、移動のたびに画像を全部書き換えない。 */
+function eraseOnObjectsSegment(x1,y1,x2,y2,r){
+  const sp=spreads[cur];
+  if(!sp||!sp.objs.length)return;
+  for(const o of sp.objs){
+    if(!o?.bmp||!o.w||!o.h||!(o.scale>0))continue;
+    // 拡大・回転後の画像上での座標へ変換。線分のバウンディングボックスで粗判定
+    const p1=local(o,x1,y1),p2=local(o,x2,y2);
+    const lr=r/o.scale,hw=o.w/2,hh=o.h/2;
+    if(Math.max(p1.x,p2.x)+lr< -hw||Math.min(p1.x,p2.x)-lr>hw||
+       Math.max(p1.y,p2.y)+lr< -hh||Math.min(p1.y,p2.y)-lr>hh)continue;
+    const ctx=o.bmp.getContext('2d');
+    if(!ctx)continue;
     ctx.save();
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.beginPath();
-    ctx.arc(imgX, imgY, radiusLocal, 0, Math.PI*2);
-    ctx.fill();
+    ctx.globalCompositeOperation='destination-out';
+    ctx.fillStyle='#000';ctx.strokeStyle='#000';
+    const ax=p1.x+hw,ay=p1.y+hh,bx=p2.x+hw,by=p2.y+hh;
+    if(Math.hypot(ax-bx,ay-by)<0.01){
+      ctx.beginPath();ctx.arc(ax,ay,lr,0,Math.PI*2);ctx.fill();
+    }else{
+      ctx.lineWidth=2*lr;
+      ctx.lineCap='round';ctx.lineJoin='round';
+      ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();
+    }
     ctx.restore();
   }
+}
+function eraseOnObjects(cx,cy,r){
+  eraseOnObjectsSegment(cx,cy,cx,cy,r);
 }
 
 /* ★ 四角（バウンディングボックス）に入っているか */
@@ -3590,7 +3614,12 @@ function canvasTouchStart(e){
   }
   const t=e.touches[0];
   touchLongPressConsumed=false;
-  if(t.touchType==='stylus'){canvasDown(e);return;} // Apple Pencil は即時
+  if(t.touchType==='stylus'||(mode==='draw'&&erasing&&!isEyedropperMode&&!isPanMode)){
+    // 消しゴムは長押しメニューより優先。iPadで止めて消す操作を中断しない。
+    canvasDown(e);
+    e.preventDefault();
+    return;
+  }
   cancelTouchLongPress();
   const pending={identifier:t.identifier,x:t.clientX,y:t.clientY,
     force:t.force??0.5,touchType:t.touchType,timer:null};
