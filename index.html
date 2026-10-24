@@ -4661,6 +4661,10 @@ function refreshFSIfLogMode(){
 const fs=document.getElementById('fs');
 const fsCanvas=document.getElementById('fsCanvas');
 const fsCtx=fsCanvas.getContext('2d');
+// ログ再生の毎フレームでW×Hの新しいCanvasを作るとiPadがメモリ不足になる。
+// ページ合成用のCanvasは使い回す。
+const fsPageBuffer=document.createElement('canvas');
+fsPageBuffer.width=W;fsPageBuffer.height=H;
 let autoPlaying=false;
 let fsAutoStepToken=0;
 let currentAudio=null;
@@ -4793,10 +4797,9 @@ function drawFS(){
   // 完成絵には既存の最終ページ内容だけを使用。削除済み写真を再構成しない。
   let pageCanvas = null;
   if (!pageCanvas){
-    const comp = document.createElement('canvas');
-    comp.width  = W;
-    comp.height = H;
-    const cc = comp.getContext('2d');
+    const comp=fsPageBuffer;
+    const cc=comp.getContext('2d');
+    cc.clearRect(0,0,W,H);
 
     drawBGForType(spreads[cur].type || 'normal');
     cc.drawImage(bgCvs, 0, 0);
@@ -6114,7 +6117,13 @@ async function applyBookArchiveData(data){
   stamps.length=0;stamps.push(...unpacked.stamps);
   currentStampIndex=Math.min(stamps.length-1,Math.max(-1,Number(data.currentStampIndex)||0));
   actionLog.splice(0,actionLog.length,...data.events);
-  importedLogTimeOffset=Math.max(0,...data.events.map(e=>Number(e.time_sec)||0))+1;
+  // 数万件の描画イベントでもスプレッド引数の上限で読み込みが失敗しないようにする。
+  let maxSavedTime=0;
+  for(const ev of data.events){
+    const t=Number(ev.time_sec);
+    if(Number.isFinite(t)&&t>maxSavedTime)maxSavedTime=t;
+  }
+  importedLogTimeOffset=maxSavedTime+1;
   sceneFrameCache.clear();
   for(const obj of Object.keys(pageLocalTime))delete pageLocalTime[obj];
   for(const obj of Object.keys(pageLastGlobalTime))delete pageLastGlobalTime[obj];
