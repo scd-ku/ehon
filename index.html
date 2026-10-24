@@ -320,6 +320,9 @@ canvas{display:block;touch-action:none}
 #saveProject{background:#f1f6f2;border-color:#cadacc}
 #replayProject{background:#f3f6fa;border-color:#cfd9e4}
 #projectStatus{font-size:12px;color:#586369;margin-left:8px}
+#autoSaveStatus{font-size:12px;color:#526c5d;margin-left:8px}
+#autoSaveStatus[data-state="error"]{color:#a02727}
+#autoSaveStatus[data-state="working"]{color:#607387}
 #projectTools .btn:disabled{opacity:.45}
 @media(max-width:720px){#projectTools{justify-content:flex-start}#projectTools .btn{font-size:12px;padding:8px 10px}#projectStatus{flex-basis:100%;margin-left:0}}
 
@@ -623,6 +626,17 @@ canvas{display:block;touch-action:none}
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V7a1.5 1.5 0 0 1 3 0V5a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1 3 0v5c0 4-2.5 7-7 7h-1c-2.7 0-4.1-1-5.4-3.1l-3-4a1.6 1.6 0 0 1 2.7-1.7L8 14"/></svg>
   </button>
   
+  <!-- 迷子になったノートの倍率と位置を初期状態へ戻す -->
+  <button id="resetNotebookView" class="btn icon" type="button"
+    title="ノートの表示をリセット：倍率100%・中央の初期位置"
+    aria-label="ノートの倍率と位置を初期状態に戻す">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" rx="1.2"></rect>
+      <path d="M9 3H3v6M15 3h6v6M3 15v6h6M21 15v6h-6"></path>
+      <path d="m3 9 3-3m15 3-3-3M3 15l3 3m15-3-3 3"></path>
+    </svg>
+  </button>
+
   <!-- ★ Undoボタン -->
   <button id="btnUndo" class="btn icon" title="1つ前の状態に戻す（Undo）">
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -871,6 +885,7 @@ canvas{display:block;touch-action:none}
   </button>
   <input id="projectFileInput" type="file" accept=".ehon,application/json" hidden aria-label="保存した作品ファイルを選択">
   <span id="projectStatus" role="status" aria-live="polite">音声・絵・制作過程を保存できます</span>
+  <span id="autoSaveStatus" data-state="working" role="status" aria-live="polite">自動保存：起動中…</span>
 </div>
 
 <!-- ノートの下のページ番号表示 -->
@@ -1109,6 +1124,13 @@ bgCvs.style.pointerEvents    = 'none';  // 背表紙などの背景も貫通
 /* ========= ★ 操作ログ ========= */
 const actionLog = [];
 
+// 自動復元の初期化が終わるまで保存を開始しない。ブラウザ内の下書きを
+// 起動直後の空白ページで上書きする事故を防ぐ。
+let autosaveReady=false,autosaveRevision=0,autosaveCommittedRevision=-1;
+let autosaveTimer=null,autosaveBusy=false,autosaveLastStarted=0;
+let autosaveWorkPromise=null;
+const autosaveImageBlobs=new WeakMap();
+
 // ★ パフォーマンス時間と、開始時の「実時間」を両方持っておく
 const logStartPerf   = performance.now();
 const logStartWallMs = Date.now();
@@ -1191,6 +1213,12 @@ function logAction(type, detail = {}) {
     try{entry.sceneFrame=captureSceneFrame();}catch(e){console.warn('過程の画像記録を省略',e)}
   }
   actionLog.push(entry);
+  if(!['drawStart','drawMove','fsOpen','fsClose','fsAutoPlayStart','fsAutoPlayStop',
+       'audioPlay','audioSave','audioRecordStart','pageChange','toolSelect'].includes(type)){
+    markAutosaveDirty(type);
+  }else if(type==='pageChange'){
+    markAutosaveDirty(type);
+  }
 
     // ★ ここから追加：pageTimeMax / 再生範囲（カッコ）の更新
     if (!skipPageTime && page != null && tPage != null) {
@@ -1318,6 +1346,12 @@ function updateViewTransform(){
   stage.style.transformOrigin = '0 0';
   stage.style.transform = `translate(${viewOffsetX}px, ${viewOffsetY}px) scale(${viewScale})`;
 }
+document.getElementById('resetNotebookView').addEventListener('click',()=>{
+  isPinching=false;
+  viewScale=1;viewOffsetX=0;viewOffsetY=0;
+  updateViewTransform();
+  layoutTimeline();
+});
 
 /* iPad/iPhone: 2本指の中央を世界座標の固定点として拡大縮小 */
 let isPinching=false;
@@ -2186,6 +2220,7 @@ function undoCurrent(){
   sp.paintOff = snap.paintOff;
   sp.objs     = snap.objs;
   sp.tint     = { ...snap.tint };
+  markAutosaveDirty('undo');
 
   // キャンバスを復元
   pc.clearRect(0,0,W,H);
@@ -2461,8 +2496,8 @@ if(penSizeNum){
   penSizeNum.oninput  = (e)=> setPenSize(e.target.value, 'number');
   penSizeNum.onchange = (e)=> setPenSize(e.target.value);
 }
-pageBgColor.oninput =()=>{ spreads[cur].tint.color=pageBgColor.value; drawTint(); };
-pageBgAlpha.oninput =()=>{ spreads[cur].tint.alpha=(+pageBgAlpha.value)/100; alphaView.textContent=pageBgAlpha.value+'%'; drawTint(); };
+pageBgColor.oninput =()=>{ spreads[cur].tint.color=pageBgColor.value; drawTint();markAutosaveDirty('tint'); };
+pageBgAlpha.oninput =()=>{ spreads[cur].tint.alpha=(+pageBgAlpha.value)/100; alphaView.textContent=pageBgAlpha.value+'%'; drawTint();markAutosaveDirty('tint'); };
 setSwatchColor(penColor);
 setPenSize(penSize);
 
@@ -2956,6 +2991,7 @@ function eraseOnObjectsSegment(x1,y1,x2,y2,r){
       ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();
     }
     ctx.restore();
+    autosaveImageBlobs.delete(o.bmp); // 同じcanvasを書き換えたため自動保存用Blobも無効化
   }
 }
 function eraseOnObjects(cx,cy,r){
@@ -6028,7 +6064,19 @@ async function createBookArchive(){
 }
 async function archivedCanvas(src){
   if(!src)return null;
-  const img=await decodeCanvasImage(src);
+  let img;
+  if(src instanceof Blob){
+    const url=URL.createObjectURL(src);
+    try{
+      img=await new Promise((resolve,reject)=>{
+        const el=new Image();el.onload=()=>resolve(el);
+        el.onerror=()=>reject(new Error('自動保存された画像を読み込めません'));
+        el.src=url;
+      });
+    }finally{URL.revokeObjectURL(url)}
+  }else{
+    img=await decodeCanvasImage(src);
+  }
   if(img.width>4096||img.height>4096||img.width*img.height>16777216)throw new Error('画像の解像度が大きすぎます');
   const cv=document.createElement('canvas');
   cv.width=img.naturalWidth;cv.height=img.naturalHeight;
@@ -6065,7 +6113,7 @@ async function decodeBookArchive(data){
         });
       }
       if(item.audio){
-        sp.audioBlob=archiveDataToBlob(item.audio);
+        sp.audioBlob=item.audio instanceof Blob?item.audio:archiveDataToBlob(item.audio);
         sp.audioURL=URL.createObjectURL(sp.audioBlob);
         allocatedURLs.push(sp.audioURL);
         sp.audioExt=item.audioExt||'.webm';
@@ -6156,6 +6204,7 @@ async function applyBookArchiveData(data){
   }
   setProjectStatus('作品を開きました：'+spreads.length+
     'ページ。編集中の絵・録音・制作過程と再生位置を復元しました。');
+  markAutosaveDirty('archiveImported');
 }
 projectFileInput.onchange=async()=>{
   const file=projectFileInput.files?.[0];
@@ -6719,7 +6768,9 @@ saveLogBtn.onclick = () => {
       <li>カメラ映像を１回タップするとシャッター音・フラッシュとともに写真としてページに貼り付けられます。指やマウスでドラッグすれば、従来どおりなげなわで部分的に切り抜けます。映像が止まった場合は「▶ 映像を再開」を押してください。</li>
       <li>ページ追加ボタンで見開きを増やし、ページごとにマイクから録音し、停止ボタンで確定します。録音済みなら同じマイクボタンで再録音、ゴミ箱ボタンで音声だけを削除できます。</li>
       <li>読み聞かせモードで「前」「次」を押すと、そのページの録音が再生されます。「♪ 音声再生」で聞き直すこともできます。</li>
-      <li>作品を後から編集・再生するには「作品を保存」→ .ehon ファイルを保管 →「作品を開く」→「作品を再生」の順に操作します。PDFは静止画像だけを保存する形式です。</li>
+      <li>ノートが画面外へ移動したり拡大しすぎた場合は、手のひらツールの右隣にある「四隅の矢印」ボタンで倍率と位置を初期状態へ戻せます。</li>
+      <li>作品は自動保存され、同じ端末・同じブラウザでアプリを開き直すと、写真・絵・録音・操作履歴を自動復元します。ブラウザのデータ削除・プライベートモード・容量不足では復元できない場合があります。</li>
+      <li>大切な作品は必ず「作品を保存」で .ehon ファイルも保管してください。PDFは静止画像だけを保存する形式です。</li>
       <li>PCでは Ctrl／⌘ ＋ S でも作品を保存できます。保存・読み込みに使用する .ehon ファイルはアプリ専用です。通常の動画プレイヤーで見る場合は読み聞かせモードの動画保存をご利用ください。</li>
       <li>完成したら全画面で読み聞かせを確認し、PDFとして保存できます。</li>
     </ol>
