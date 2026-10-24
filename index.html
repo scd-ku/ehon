@@ -1184,7 +1184,7 @@ function decodeCanvasImage(url){
   });
 }
 async function prepareArchiveFrames(){
-  const unique=new Set(actionLog.map(e=>e.sceneFrame).filter(Boolean));
+  const unique=new Set(actionLog.map(e=>e.sceneFrame).filter(v=>typeof v==='string'&&v.startsWith('data:image/')));
   // Decode lazily but in sequence to limit simultaneous memory demand.
   for(const url of unique){
     if(sceneFrameCache.has(url))continue;
@@ -3972,6 +3972,7 @@ function addSpreadAfterCurrent(){
 
   const sp = newSpread('normal');
   spreads.splice(insertIndex,0,sp);
+  // Session-local page indices may move; event.pageId is the canonical identity.
   historyMap.set(sp, []);    // ★ この見開き用の履歴を作る
 
   loadSpread(insertIndex);
@@ -4306,7 +4307,7 @@ function fitFS(){ fsCanvas.width=window.innerWidth; fsCanvas.height=window.inner
   if (e == null){
     let maxT = 0;
     for (const ev of actionLog){
-      if (ev.page === pageNo && typeof ev.page_time_sec === 'number'){
+      if (replayEventMatchesPage(ev,pageIndex) && typeof ev.page_time_sec === 'number'){
         if (ev.page_time_sec > maxT) maxT = ev.page_time_sec;
       }
     }
@@ -4317,7 +4318,7 @@ function fitFS(){ fsCanvas.width=window.innerWidth; fsCanvas.height=window.inner
   isRebuildingFromLogForSnapshot = true;
 
   for (const ev of actionLog){
-    if (ev.page !== pageNo) continue;
+    if (!replayEventMatchesPage(ev,pageIndex)) continue;
     const t = (typeof ev.page_time_sec === 'number')
       ? ev.page_time_sec
       : (typeof ev.time_sec === 'number' ? ev.time_sec : 0);
@@ -4747,10 +4748,12 @@ function stopAutoPlay(finished = false){
 
   autoPlaying = false;
   fsAutoStepToken++;
+  stopPageLogReplay();
   fsAuto.textContent = '⏯ 自動再生';
   fsAuto.classList.remove('active');   // ハイライト解除
 
   stopCurrentAudio();
+  restorePresentation();
 
   // 録画停止（fsMediaRecorder.onstop 内で fsLastVideoBlob が作成され、
   // 「保存」「投稿」ボタンが有効になる前提）
@@ -4779,8 +4782,35 @@ fsAuto.onclick = ()=>{
   }
 };
 
+/* Full-screen replay is a temporary presentation: never overwrite the editable work. */
+let presentationOriginal=null;
+let presentationRestoreBusy=false;
+function backupPresentation(){
+  if(presentationOriginal)return;
+  saveCur();
+  presentationOriginal=spreads.map(sp=>({sp,paintOff:sp.paintOff,objs:sp.objs,tint:sp.tint}));
+}
+function restorePresentation(){
+  if(!presentationOriginal||presentationRestoreBusy)return;
+  presentationRestoreBusy=true;
+  try{
+    stopPageLogReplay();
+    cancelStrokeCapture();
+    for(const original of presentationOriginal){
+      if(!spreads.includes(original.sp))continue;
+      original.sp.paintOff=original.paintOff;
+      original.sp.objs=original.objs;
+      original.sp.tint=original.tint;
+    }
+    sel=-1;
+    // Reconstruct editor canvases and page UI from the protected final artwork.
+    loadSpread(Math.min(cur,spreads.length-1));
+    if(fs.classList.contains('show'))drawFS();
+  }finally{presentationRestoreBusy=false}
+}
 function openFS(){
   hideDrawPanel();
+  backupPresentation();
 
   stopPreviewAudio();stopRecordingIfActive('readingMode');
   // ★ 読みきかせ中はページ時間を進めない
@@ -4802,9 +4832,12 @@ function openFS(){
 
 
 function closeFS(){
-  fs.classList.remove('show');
   stopAutoPlay?.();
+  stopPageLogReplay();
   stopCurrentAudio?.();
+  fs.classList.remove('show');
+  restorePresentation();
+  presentationOriginal=null;
 
   // 念のため録画も止める
   if (fsMediaRecorder && fsMediaRecorder.state === 'recording'){
@@ -4823,7 +4856,14 @@ function closeFS(){
 }
 
 
-fsOpen.onclick=openFS;
+fsOpen.onclick=async()=>{
+  // Keep user gesture fullscreen prompt by opening first, then loading snapshots.
+  openFS();
+  if(fsMode==='log'){
+    await prepareArchiveFrames();
+    if(fs.classList.contains('show')){restorePresentation();playForCurrentFSPage()}
+  }
+};
 fsExit.onclick=closeFS;
 window.addEventListener('resize',()=>{
   if(fs.classList.contains('show')){
@@ -5181,10 +5221,15 @@ let replayPenSize    = 10;
 let replayBrushMode  = 'crayon';
 let replayErasing    = false;
 
+function replayEventMatchesPage(ev,index=cur){
+  const sp=spreads[index];
+  if(!sp)return false;
+  return ev.pageId ? ev.pageId===sp.id : Number(ev.page)===index+1;
+}
 function applyLogEntryForPage(ev){
-  // 必要なら pageNo チェック
-  const pageIndex = (ev.page || 1) - 1;
-  if (pageIndex !== cur) return;
+  // ページ追加・削除後も安定したIDで元のページに紐づける
+  if(!replayEventMatchesPage(ev))return;
+  if(ev.sceneFrame && restoreArchiveFrame(ev))return;
 
   switch (ev.type) {
     case 'drawStart':
@@ -5292,7 +5337,7 @@ function rebuildCurrentPageFromTo(startSec, endSec){
   // 指定範囲のログだけを取り出して時系列順に並べる
   const entries = actionLog
     .filter(e =>
-      e.page === pageNo &&
+      replayEventMatchesPage(e,cur) &&
       typeof e.page_time_sec === 'number' &&
       e.page_time_sec >= startSec &&
       e.page_time_sec <= endSec
@@ -5345,10 +5390,14 @@ function replayCurrentPageFromLog(speed = 1, fromSec = 0, toSec = null){
 
   // このページのログだけを時刻順に並べる
   const events = actionLog
-    .filter(e => e.page === pageNo && typeof e.page_time_sec === 'number')
+    .filter(e => replayEventMatchesPage(e,cur) && typeof e.page_time_sec === 'number')
     .sort((a, b) => a.page_time_sec - b.page_time_sec);
 
-  if (!events.length) return;
+  if (!events.length) {
+    // 画像だけのページ、録音だけのページは完成した絵をそのまま表示
+    if(fs.classList.contains('show'))drawFS();
+    return;
+  }
 
   const maxT = events[events.length - 1].page_time_sec;
   const startT = Math.max(0, fromSec || 0);
@@ -5443,7 +5492,7 @@ function replayCurrentPageFromLog(speed = 1, fromSec = 0, toSec = null){
 // ★ 「このページのログ再生」ボタン
 const playLogPageBtn = document.getElementById('playLogPage');
 if (playLogPageBtn){
-  playLogPageBtn.onclick = () => {
+  playLogPageBtn.onclick = async () => {
     hideDrawPanel();
 
     // ★ すでにログ再生中なら STOP（＝一時停止）
@@ -5488,6 +5537,7 @@ if (playLogPageBtn){
     }
 
     // ★ 再生開始
+    await prepareArchiveFrames();
     replayCurrentPageFromLog(1, start, end);
 
     // ★ ボタンを「一時停止」状態に
@@ -5626,6 +5676,7 @@ projectSaveBtn.onclick=async()=>{
   if(fs.classList.contains('show')){alert('読み聞かせを閉じてから保存してください。');return}
   setProjectBusy(true);setProjectStatus('絵・音声・制作履歴をまとめています…');
   try{
+    if(isPageLogPlaying)stopPageLogReplay();
     const archive=await createBookArchive();
     const blob=new Blob([JSON.stringify(archive)],{type:'application/json'});
     downloadArchive(blob,'ehon_'+new Date().toISOString().slice(0,10)+'.ehon');
@@ -5650,6 +5701,7 @@ projectFileInput.onchange=async()=>{
     const unpacked=await decodeBookArchive(data); // 全画像と音声が正常なときだけ差し替える
     stopPageLogReplay();stopPreviewAudio();stopCurrentAudio();
     if(autoPlaying)stopAutoPlay(false);
+    if(presentationOriginal){restorePresentation();presentationOriginal=null}
     for(const sp of spreads)if(sp.audioURL)URL.revokeObjectURL(sp.audioURL);
     spreads=unpacked.pages;
     stamps.length=0;stamps.push(...unpacked.stamps);
@@ -5682,6 +5734,7 @@ projectReplayBtn.onclick=async()=>{
     await prepareArchiveFrames();
     fsMode='log';
     openFS();
+    updateFsModeButtons();
     startAutoPlay();
     setProjectStatus('制作過程＋ページ音声を再生中');
   }catch(e){console.error('作品再生エラー',e);alert('作品を再生できませんでした。');setProjectStatus('再生失敗')}
