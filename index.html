@@ -6233,6 +6233,200 @@ projectReplayBtn.onclick=async()=>{
   finally{setProjectBusy(false)}
 };
 
+/* ========= 自動保存・クラッシュ復元（IndexedDB） =========
+   既存.ehonと同じ構造に画像・音声のBlobを直接保持。
+   ページごとに数MBのbase64を生成する手動書き出しとは分離し、
+   1件のトランザクションで完成済みのスナップショットだけを置き換える。 */
+const AUTOSAVE_DB_NAME='scd-ku-ehon-recovery';
+const AUTOSAVE_STORE='draft';
+const AUTOSAVE_KEY='current';
+const autosaveStatus=document.getElementById('autoSaveStatus');
+let autosaveDBPromise=null;
+function showAutosaveStatus(message,state='ready'){
+  if(!autosaveStatus)return;
+  autosaveStatus.textContent='自動保存：'+message;
+  autosaveStatus.dataset.state=state;
+}
+function openAutosaveDB(){
+  if(autosaveDBPromise)return autosaveDBPromise;
+  if(!window.indexedDB)return Promise.reject(new Error('IndexedDB非対応'));
+  autosaveDBPromise=new Promise((resolve,reject)=>{
+    const req=indexedDB.open(AUTOSAVE_DB_NAME,1);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains(AUTOSAVE_STORE))db.createObjectStore(AUTOSAVE_STORE);
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error||new Error('保存領域を開けません'));
+    req.onblocked=()=>reject(new Error('別のタブで保存領域を使用しています'));
+  }).catch(error=>{
+    autosaveDBPromise=null;
+    throw error;
+  });
+  return autosaveDBPromise;
+}
+async function autosaveRead(){
+  const db=await openAutosaveDB();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(AUTOSAVE_STORE,'readonly');
+    const req=tx.objectStore(AUTOSAVE_STORE).get(AUTOSAVE_KEY);
+    req.onsuccess=()=>resolve(req.result||null);
+    req.onerror=()=>reject(req.error||new Error('下書きの読込失敗'));
+    tx.onerror=()=>reject(tx.error||new Error('保存領域の読込失敗'));
+  });
+}
+async function autosaveWrite(snapshot){
+  const db=await openAutosaveDB();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(AUTOSAVE_STORE,'readwrite');
+    tx.objectStore(AUTOSAVE_STORE).put(snapshot,AUTOSAVE_KEY);
+    // onsuccessではなくoncompleteで保存の確定を確認
+    tx.oncomplete=()=>resolve();
+    tx.onerror=()=>reject(tx.error||new Error('保存に失敗しました'));
+    tx.onabort=()=>reject(tx.error||new Error('保存を中断しました'));
+  });
+}
+function canvasToAutosaveBlob(canvas){
+  if(!canvas)return Promise.resolve(null);
+  const cached=autosaveImageBlobs.get(canvas);
+  if(cached)return Promise.resolve(cached);
+  if(typeof canvas.toBlob!=='function')
+    return Promise.reject(new Error('ブラウザが画像保存に対応していません'));
+  return new Promise((resolve,reject)=>{
+    canvas.toBlob(blob=>{
+      if(!blob){reject(new Error('画像データの変換に失敗しました'));return}
+      autosaveImageBlobs.set(canvas,blob);
+      resolve(blob);
+    },'image/webp',0.90);
+  });
+}
+async function makeAutosaveSnapshot(){
+  // 描画中や録音中には呼ばない。既存の一筆を途中で切らずに保存する。
+  saveCur();
+  const pages=[];
+  for(const sp of spreads){
+    const objects=[];
+    for(const o of sp.objs){
+      objects.push({
+        w:o.w,h:o.h,cx:o.cx,cy:o.cy,scale:o.scale,theta:o.theta,
+        kind:o.kind||'image',bitmap:await canvasToAutosaveBlob(o.bmp)
+      });
+    }
+    pages.push({
+      id:sp.id,type:sp.type,tint:{...sp.tint},
+      pageTimeMax:sp.pageTimeMax,playStart:sp.playStart,playEnd:sp.playEnd,
+      paint:await canvasToAutosaveBlob(sp.paintOff),
+      objects,audioExt:sp.audioExt,audio:sp.audioBlob||null
+    });
+  }
+  const savedStamps=[];
+  for(const st of stamps)savedStamps.push({bitmap:await canvasToAutosaveBlob(st.img)});
+  return {
+    app:'scd-ku/ehon',format:'ehon-project',version:1,
+    savedAt:new Date().toISOString(),
+    currentPage:cur,playCursor:{pageId:spreads[cur]?.id,time:tlPlayhead},
+    pages,stamps:savedStamps,currentStampIndex,
+    events:actionLog.slice(),
+    pageLocalTime:spreads.map((sp,i)=>pageLocalTime[i+1]??sp.pageTimeMax??0)
+  };
+}
+function autoSaveCanRun(){
+  return autosaveReady&&!isDraw&&!strokeActive&&!isStampDrawing&&!isPanning&&
+    !activeRecording&&!permissionPending&&!projectBusy&&
+    !camSnapshotBusy&&!camModal.classList.contains('show')&&
+    !fs.classList.contains('show')&&!presentationOriginal;
+}
+function markAutosaveDirty(reason='edit'){
+  if(!autosaveReady)return;
+  autosaveRevision++;
+  if(!autosaveBusy)showAutosaveStatus('未保存の変更あり','working');
+  queueAutosave(reason==='drawEnd'?1800:1200);
+}
+function queueAutosave(delay=1600){
+  if(!autosaveReady)return;
+  if(autosaveTimer!=null)clearTimeout(autosaveTimer);
+  const minWait=Math.max(0,5200-(Date.now()-autosaveLastStarted));
+  autosaveTimer=setTimeout(()=>{
+    autosaveTimer=null;
+    void runAutosave();
+  },Math.max(delay,minWait));
+}
+async function runAutosave(){
+  if(!autosaveReady||autosaveRevision===autosaveCommittedRevision)return;
+  if(autosaveBusy)return;
+  if(!autoSaveCanRun()){queueAutosave(1800);return}
+  autosaveBusy=true;
+  autosaveLastStarted=Date.now();
+  const revision=autosaveRevision;
+  showAutosaveStatus('保存中…','working');
+  try{
+    const draft=await makeAutosaveSnapshot();
+    // 作成中に編集が進んだら不整合な画像と履歴を保存せず再試行する。
+    if(revision!==autosaveRevision||!autoSaveCanRun()){
+      showAutosaveStatus('変更を再確認中…','working');
+    }else{
+      await autosaveWrite(draft);
+      autosaveCommittedRevision=revision;
+      showAutosaveStatus('保存済み '+new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}));
+    }
+  }catch(e){
+    console.warn('自動保存エラー',e);
+    showAutosaveStatus('失敗。作品を保存で.ehonを保管してください','error');
+  }finally{
+    autosaveBusy=false;
+    if(autosaveReady&&autosaveRevision!==autosaveCommittedRevision){
+      // 容量不足では過剰な再試行を避ける。次回の操作／タイマーで再確認する。
+      if(autosaveStatus?.dataset.state!=='error')queueAutosave(2100);
+    }
+  }
+}
+async function initializeAutosave(){
+  showAutosaveStatus('前回の作品を確認しています…','working');
+  try{
+    // QR受信中は以前の端末下書きを表示しない。受信作品は確定時に自動保存する。
+    const isReceiving=new URLSearchParams(location.search).has('receive');
+    const saved=isReceiving?null:await autosaveRead();
+    if(saved?.format==='ehon-project'&&Array.isArray(saved.pages)){
+      await applyBookArchiveData(saved);
+      autosaveCommittedRevision=autosaveRevision;
+      showAutosaveStatus('前回の作品を復元しました');
+      setProjectStatus('自動保存された制作途中の作品を復元しました。ここから描画・録音・再生を続けられます。');
+    }else{
+      if(!isReceiving)await openAutosaveDB();
+      showAutosaveStatus('有効');
+    }
+    autosaveReady=true;
+  }catch(e){
+    console.error('自動復元エラー',e);
+    // 失敗した下書きを空白作品で上書きしない。手動ファイル保存・読込は使える。
+    autosaveReady=false;
+    showAutosaveStatus('利用不可（ブラウザの保存設定・空き容量を確認）','error');
+    setProjectStatus('自動復元できませんでした。以前の下書きは消去していません。');
+  }finally{
+    // 復元処理で一時停止していた操作を使えるようにする。
+    paintCvs.style.pointerEvents='auto';
+    projectSaveBtn.disabled=projectBusy;
+    projectLoadBtn.disabled=projectBusy;
+    if(autosaveReady&&autosaveRevision!==autosaveCommittedRevision)queueAutosave();
+  }
+}
+// 起動直後に復元するまで描画・ファイル操作で空白データを上書きしない。
+paintCvs.style.pointerEvents='none';
+projectSaveBtn.disabled=true;
+projectLoadBtn.disabled=true;
+void initializeAutosave();
+setInterval(()=>{
+  if(autosaveReady&&autosaveRevision!==autosaveCommittedRevision&&!autosaveBusy)
+    void runAutosave();
+},12000);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='hidden'&&autosaveReady&&
+      autosaveRevision!==autosaveCommittedRevision)void runAutosave();
+});
+window.addEventListener('pagehide',()=>{
+  if(autosaveReady&&autosaveRevision!==autosaveCommittedRevision)void runAutosave();
+});
+
 /* ========= ★ 操作ログCSV 保存 ========= */
 const saveLogBtn = document.getElementById('saveLog');
 saveLogBtn.onclick = () => {
