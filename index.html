@@ -369,7 +369,10 @@ canvas{display:block;touch-action:none}
 #camView,#camOverlay{
   position:absolute;inset:0;
 }
-#camOverlay{touch-action:none;}
+#camOverlay{touch-action:none;cursor:crosshair}
+#camFlash{position:absolute;inset:0;background:#fff;z-index:4;pointer-events:none;opacity:0}
+#camFlash.active{animation:camShutterFlash .3s ease-out both}
+@keyframes camShutterFlash{0%{opacity:0}14%{opacity:.96}35%{opacity:.85}100%{opacity:0}}
 .camBtns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .cam-live-status{
   position:absolute;left:10px;bottom:10px;z-index:3;
@@ -412,7 +415,8 @@ canvas{display:block;touch-action:none}
   font-size:12px;
 }
 
-/* 右クリックメニュー（画像複製／削除／ペースト） */
+/* 長押しメニューを表示したときだけ背面をタップ不可にする透明の受け面 */
+#imgMenuDismissLayer{position:fixed;inset:0;z-index:399;display:none;background:transparent;touch-action:manipulation}
 #imgMenu{
   position:fixed;
   z-index:400;
@@ -918,6 +922,7 @@ canvas{display:block;touch-action:none}
       <video id="camVideo" playsinline webkit-playsinline autoplay muted preload="none" disablepictureinpicture></video>
       <canvas id="camView"></canvas>
       <canvas id="camOverlay"></canvas>
+      <div id="camFlash" aria-hidden="true"></div>
       <div id="camLiveStatus" class="cam-live-status" role="status" aria-live="polite">カメラの準備中…</div>
       <div id="camDropHint">ここに画像をドロップ</div>
 
@@ -943,7 +948,8 @@ canvas{display:block;touch-action:none}
           トゥーンシェーディング
         </label>
         <div style="margin-top:3px;white-space:normal;color:#ddd">
-          ※なげなわで囲って指／マウスを離すと自動で切り抜いて貼り付けます。<br>
+          ※動画をタップするとシャッター音とフラッシュで写真を撮影します。
+           ※なぞって囲むと従来どおりなげなわ切り抜きができます。<br>
           ※「画像をひらく」で保存してある写真やイラストからも切り抜けます。<br>
           　（画像をこの画面にドラッグ＆ドロップ／貼り付けでもOK）<br>
           ※トゥーンONで教科書イラスト風の映像になります。
@@ -993,6 +999,7 @@ canvas{display:block;touch-action:none}
 
 
 <!-- 右クリックメニュー -->
+<div id="imgMenuDismissLayer" aria-hidden="true"></div>
 <div id="imgMenu">
   <button data-act="front">いちばん上へ（前面）</button>
   <button data-act="back">いちばん下へ（背面）</button>
@@ -1214,7 +1221,7 @@ function logAction(type, detail = {}) {
 /* 編集の節目を圧縮画像で記録する。途中のマウス移動は既存ログから連続描画する。
    古いイベントログで再現できなかったUndo・消去・重ね順変更も復元可能。 */
 const SCENE_CAPTURE_EVENTS=new Set([
-  'drawEnd','undo','explodeClear','stampPlace','cameraCut','imageLoad',
+  'drawEnd','undo','explodeClear','stampPlace','cameraCut','cameraCapture','imageLoad',
   'imageOp','imageDup','imageDelete','imageOrder','imagePaste'
 ]);
 let replayingArchivedVisuals=false;
@@ -1588,7 +1595,7 @@ function drawTimeline(){
         kind = e.erasing ? 'erase' : 'draw';
       }
       // スタンプ & 画像貼り付け → 三角形
-      else if (e.type === 'stampPlace' || e.type === 'imagePaste') {
+      else if (e.type === 'stampPlace' || e.type === 'imagePaste' || e.type === 'cameraCapture') {
         kind = 'stamp';
       }
       // 爆竹 → 星
@@ -3633,6 +3640,7 @@ const camModal=document.getElementById('camModal');
 const camVideo=document.getElementById('camVideo');
 const camView=document.getElementById('camView');
 const camOverlay=document.getElementById('camOverlay');
+const camFlash=document.getElementById('camFlash');
 const viewCtx=camView.getContext('2d');
 const ctxOL=camOverlay.getContext('2d');
 const btnOpenCam=document.getElementById('openCam');
@@ -3866,7 +3874,8 @@ function drawLassoOverlay(){
 }
 function camPos(e){
   const r=camOverlay.getBoundingClientRect();
-  const src=e.touches?e.touches[0]:e.changedTouches?e.changedTouches[0]:e;
+  const src=(e.touches&&e.touches.length?e.touches[0]:null)
+    ||(e.changedTouches&&e.changedTouches.length?e.changedTouches[0]:null)||e;
   const cx=src.clientX, cy=src.clientY;
   const x=(cx-r.left)*(camOverlay.width/r.width);
   const y=(cy-r.top)*(camOverlay.height/r.height);
@@ -5268,6 +5277,7 @@ savePdf.onclick=()=>{
 
 /* ========= 画像右クリックメニュー ========= */
 const imgMenu=document.getElementById('imgMenu');
+const imgMenuDismissLayer=document.getElementById('imgMenuDismissLayer');
 const btnDup =imgMenu.querySelector('[data-act="dup"]');
 const btnDel =imgMenu.querySelector('[data-act="del"]');
 const btnPaste=imgMenu.querySelector('[data-act="paste"]');
@@ -5293,6 +5303,7 @@ function showImgMenu(x,y,menuMode){
     btnPaste.style.display=clipboardTemplate?'block':'none';
     if(!clipboardTemplate) return;
   }
+  imgMenuDismissLayer.style.display='block';
   imgMenu.style.display='block';
 
   // 画面からはみ出さないように位置を微調整
@@ -5307,8 +5318,13 @@ function showImgMenu(x,y,menuMode){
 }
 function hideImgMenu(){
   imgMenu.style.display='none';
+  imgMenuDismissLayer.style.display='none';
   menuTargetIndex=-1;
 }
+imgMenuDismissLayer.addEventListener('click',e=>{
+  e.preventDefault();
+  hideImgMenu();
+});
 function openCanvasContextMenu(clientX,clientY){
   hideImgMenu();
   const p=pos(paintCvs,{clientX,clientY});
@@ -5627,6 +5643,7 @@ function applyLogEntryForPage(ev){
 
     case 'stampPlace':
     case 'cameraCut':
+    case 'cameraCapture':
     case 'imageLoad': {
       if (typeof ev.stampIndex === 'number') {
         placeStampForReplay(
