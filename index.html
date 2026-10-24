@@ -4108,7 +4108,10 @@ async function startCam(deviceId=null){
   }
 }
 camResume.addEventListener('click',async()=>{
-  if(!camStream)await startCam(currentCamDeviceId);
+  // 一時停止ならplay()、再生扱いのままフレームが停滞していればカメラ自体を取り直す。
+  const stalled=camStream&&!camVideo.paused&&
+    camLastProgressAt>0&&performance.now()-camLastProgressAt>1800;
+  if(!camStream||stalled)await startCam(currentCamDeviceId);
   else await resumeCamVideo();
 });
 camVideo.addEventListener('loadedmetadata',()=>{
@@ -6622,7 +6625,7 @@ saveLogBtn.onclick = () => {
       <li>矢印ツールでオブジェクトを選び、手のアイコンでキャンバスを移動します。Macでは右クリック／２本指タップ、iPadでは画像や線を約0.5秒長押しすると、複製・削除・前後移動のメニューを開けます。</li>
       <li>ペンを選び、パレット、またはツールバーに表示される現在の色と太さの丸を押して、ブラシ・色・太さを設定して描きます。</li>
       <li>画像ボタンから写真を読み込み、画像編集ツールで位置・角度・大きさを整えます。</li>
-      <li>必要に応じてカメラ／なげなわ切り抜きやスタンプを使います。</li>
+      <li>必要に応じてカメラ／なげなわ切り抜きやスタンプを使います。iPad・iPhoneで映像が止まる場合は、カメラへのアクセスを許可し、画面上部の「▶ 映像を再開」を押してください。</li>
       <li>ページ追加ボタンで見開きを増やし、ページごとにマイクから録音し、停止ボタンで確定します。録音済みなら同じマイクボタンで再録音、ゴミ箱ボタンで音声だけを削除できます。</li>
       <li>読み聞かせモードで「前」「次」を押すと、そのページの録音が再生されます。「♪ 音声再生」で聞き直すこともできます。</li>
       <li>作品を後から編集・再生するには「作品を保存」→ .ehon ファイルを保管 →「作品を開く」→「作品を再生」の順に操作します。PDFは静止画像だけを保存する形式です。</li>
