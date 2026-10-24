@@ -5964,8 +5964,10 @@ saveLogBtn.onclick = () => {
       <div class="book-share-actions">
         <button id="bookShareCopy" class="btn" type="button" disabled>リンクをコピー</button>
         <button id="bookShareStop" class="btn" type="button" disabled>共有を終了</button>
+        <button id="bookShareExternalFile" class="btn" type="button" disabled>通信できない場合：作品ファイルを保存</button>
       </div>
       <p class="book-share-note">※ 受信が終わるまで、この端末でアプリを開いたままにしてください。QRのリンクは一時的なものです。受信側で「端末に保存」すると、共有元を閉じても後から作品を開けます。</p>
+      <p class="book-share-note">Wi-Fiと4G/5Gで直接通信できない場合は、上のボタンから作品ファイルを保存し、<a href="https://pairdrop.net/" target="_blank" rel="noopener noreferrer">PairDrop（外部サービス）</a>の「一時ルーム」で送れます。相手も同じルームに参加して受信した .ehon ファイルを「作品を開く」で読み込んでください。PairDropでも送信できないネットワークではGoogle Drive等のファイル共有をご利用ください。</p>
     </div>
     <div id="bookShareReceive" class="book-share-panel" hidden>
       <p class="book-share-note">共有元がQRを表示している間に「受信を開始」を押してください。音声や制作過程もまとめて届きます。</p>
@@ -5977,6 +5979,7 @@ saveLogBtn.onclick = () => {
         <button id="bookShareReceivePlay" class="btn" type="button" disabled>開いて再生</button>
       </div>
       <p class="book-share-note">「端末に保存」したファイルは、後日このアプリの「作品を開く」から再生できます。iPhoneでは「ファイル」、Androidでは「ダウンロード」に保存されます（端末の設定で場所は異なります）。</p>
+      <p class="book-share-note">通信に失敗した場合は、送信側で作品ファイルを保存し、<a href="https://pairdrop.net/" target="_blank" rel="noopener noreferrer">PairDrop（外部サービス）</a>やクラウドストレージから受け取れます。受信した .ehon ファイルは本アプリの「作品を開く」で読み込んでください。</p>
     </div>
   </div>
 </div>
@@ -5996,6 +5999,7 @@ saveLogBtn.onclick = () => {
   const qrBox=$('bookShareQR');
   const copyBtn=$('bookShareCopy');
   const stopBtn=$('bookShareStop');
+  const externalFileBtn=$('bookShareExternalFile');
   const beginBtn=$('bookShareReceiveStart');
   const saveBtn=$('bookShareReceiveSave');
   const openBtn=$('bookShareReceiveOpen');
@@ -6006,10 +6010,29 @@ saveLogBtn.onclick = () => {
   const BATCH_SIZE=8;
   const MAX_CHARACTERS=60*1024*1024;
   const MAX_FILE_BYTES=90*1024*1024;
+  // PeerJS同梱のTURNサーバーはUDP:3478が中心。
+  // モバイル回線では制限されることがあるため、公開されている
+  // Open Relay のUDP:80／TCP:443／TLS:443も接続候補に加える。
+  // 公開中継サーバーはベストエフォートで、常時利用を保証しない。
+  const iceServers=[
+    {urls:['stun:stun.l.google.com:19302','stun:stun.cloudflare.com:3478']},
+    {urls:['turn:eu-0.turn.peerjs.com:3478','turn:us-0.turn.peerjs.com:3478'],
+      username:'peerjs',credential:'peerjsp'},
+    {urls:['turn:openrelay.metered.ca:80?transport=udp',
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turns:openrelay.metered.ca:443?transport=tcp'],
+      username:'openrelayproject',credential:'openrelayproject'}
+  ];
+  function peerOptions(relayOnly=false){
+    return {config:{iceServers,iceTransportPolicy:relayOnly?'relay':'all',
+                     sdpSemantics:'unified-plan'},debug:1};
+  }
+  const errorMessage=e=>String(e?.type||e?.message||e||'unknown').slice(0,100);
   let sourcePeer=null,sourceJson=null,sourceUrl=null,sourceConnections=new Set();
   let sourceStarting=false,sourceCounter=0;
   let receiverPeer=null,receiverConn=null,receivedText=null,receivedArchive=null;
   let receiving=false,receiverToken=0,receivedFilename='shared_ehon.ehon';
+  let receiveWatchdog=null,receiveAttempts=0;
   const queryPeer=new URLSearchParams(location.search).get('receive');
   const senderPeerId=ID_REGEX.test(queryPeer||'')?queryPeer:null;
 
@@ -6055,7 +6078,7 @@ saveLogBtn.onclick = () => {
     sourceConnections.clear();
     try{sourcePeer?.destroy()}catch(_){}
     sourcePeer=null;sourceJson=null;sourceUrl=null;
-    stopBtn.disabled=true;copyBtn.disabled=true;
+    stopBtn.disabled=true;copyBtn.disabled=true;externalFileBtn.disabled=true;
     qrBox.textContent='';
     $('bookShareURL').textContent='';
     $('bookShareURL').removeAttribute('href');
@@ -6125,7 +6148,7 @@ saveLogBtn.onclick = () => {
       status(sendStatus,'作品の保存や読み聞かせが終わってから共有してください。');return;
     }
     sourceStarting=true;
-    copyBtn.disabled=true;stopBtn.disabled=true;
+    copyBtn.disabled=true;stopBtn.disabled=true;externalFileBtn.disabled=true;
     status(sendStatus,'絵・音声・制作過程を共有用に準備しています…');
     try{
       if(isPageLogPlaying)stopPageLogReplay();
@@ -6137,7 +6160,8 @@ saveLogBtn.onclick = () => {
         throw new Error('作品が大きすぎます。「作品を保存」で .ehon ファイルに保存し、クラウドストレージなどで共有してください。');
       }
       status(sendStatus,'端末間の接続を準備しています…');
-      const peer=new Peer(randomShareId());
+      externalFileBtn.disabled=false;
+      const peer=new Peer(randomShareId(),peerOptions());
       sourcePeer=peer;
       peer.on('open',id=>{
         if(sourcePeer!==peer)return;
@@ -6147,7 +6171,7 @@ saveLogBtn.onclick = () => {
         link.href=sourceUrl;
         link.textContent=sourceUrl;
         copyBtn.disabled=false;stopBtn.disabled=false;
-        status(sendStatus,'共有準備完了。相手の端末でQRを読み取り、「受信を開始」を押してください。');
+        status(sendStatus,'共有準備完了。相手の端末でQRを読み取り、「受信を開始」を押してください。Wi-Fiと4G/5G間では通信開始に時間がかかる場合があります。');
       });
       peer.on('connection',conn=>{
         if(sourcePeer===peer&&sourceJson)acceptIncoming(conn);
@@ -6163,7 +6187,12 @@ saveLogBtn.onclick = () => {
         }
       });
       peer.on('disconnected',()=>{
-        status(sendStatus,'接続サーバーと切断されました。共有を終了してから再試行してください。');
+        if(sourcePeer!==peer||peer.destroyed)return;
+        status(sendStatus,'接続仲介サーバーが切断されました。再接続しています…');
+        try{peer.reconnect()}catch(e){
+          console.warn('共有元の再接続失敗',e);
+          status(sendStatus,'接続が戻りません。共有を終了し、QRを作り直してください。');
+        }
       });
     }catch(e){
       console.error(e);
@@ -6174,6 +6203,7 @@ saveLogBtn.onclick = () => {
   }
 
   function stopReceiver(){
+    if(receiveWatchdog!=null){clearTimeout(receiveWatchdog);receiveWatchdog=null;}
     receiverToken++;
     try{receiverConn?.close()}catch(_){}
     try{receiverPeer?.destroy()}catch(_){}
@@ -6241,25 +6271,51 @@ saveLogBtn.onclick = () => {
       }
     }
   }
-  function startReceiving(){
+  // 1回目は直接接続と中継の両方を試し、失敗時はTURN専用で1回再試行する。
+  // 「peer-unavailable」はQR切れ／共有元終了なので再試行しても改善しない。
+  function startReceiving(relayOnly=false){
     if(!senderPeerId){
       status(receiveStatus,'有効な共有QRではありません。共有元にQRを作り直してもらってください。');
       return;
     }
     if(!window.Peer){
-      status(receiveStatus,'端末間通信を読み込めません。ネットワークを確認してください。');
+      status(receiveStatus,'端末間通信を読み込めません。ブラウザを再読み込みしてください。');
       return;
     }
     stopReceiver();
-    receivedText=null;receivedArchive=null;
-    receiveStatus.classList.remove('book-share-success');
-    saveBtn.disabled=true;openBtn.disabled=true;playBtn.disabled=true;
+    if(!relayOnly){
+      receiveAttempts=0;
+      receivedText=null;receivedArchive=null;
+      receiveStatus.classList.remove('book-share-success');
+      saveBtn.disabled=true;openBtn.disabled=true;playBtn.disabled=true;
+    }
+    receiveAttempts++;
     beginBtn.disabled=true;
-    status(receiveStatus,'共有元の端末と接続しています…');
     const token=++receiverToken;
     receiving=true;
+    status(receiveStatus,relayOnly
+      ?'直接接続ができなかったため、4G/5G対応の中継サーバー経由で再接続中です…'
+      :'共有元の端末と接続しています（Wi-Fi／4G回線の接続確認中）…');
+    function failOrRetry(message,e){
+      if(token!==receiverToken||!receiving)return;
+      const type=String(e?.type||'');
+      if(type==='peer-unavailable'){
+        receiveError('共有元が見つかりません。iPadでQRと「共有準備完了」が表示されているか確認し、新しいQRを読み取ってください。');
+        return;
+      }
+      if(!relayOnly){
+        console.warn('通常接続が失敗したため中継のみで再試行',message,errorMessage(e));
+        startReceiving(true);
+      }else{
+        receiveError('Wi-Fiと4G/5G間の接続に失敗しました（'+errorMessage(e||message)+'）。共有元の画面を開いたまま、再度「受信を開始」を押してください。改善しない場合はPairDrop等で .ehon ファイルを送ってください。');
+      }
+    }
+    receiveWatchdog=setTimeout(()=>{
+      if(token===receiverToken&&receiving)
+        failOrRetry('接続待ちがタイムアウトしました',{type:'timeout'});
+    },relayOnly?25000:16000);
     try{
-      const peer=new Peer();
+      const peer=new Peer(peerOptions(relayOnly));
       receiverPeer=peer;
       peer.on('open',()=>{
         if(token!==receiverToken)return;
@@ -6268,24 +6324,31 @@ saveLogBtn.onclick = () => {
         const session={metadata:null,chunks:null,next:0};
         conn.on('open',()=>{
           if(token!==receiverToken)return;
-          conn.send({t:'request',protocol:1});
+          if(receiveWatchdog!=null){clearTimeout(receiveWatchdog);receiveWatchdog=null;}
+          status(receiveStatus,'接続しました。絵・音声・操作履歴を受信しています…');
+          try{conn.send({t:'request',protocol:1})}catch(e){
+            failOrRetry('作品の受信要求に失敗',e);
+          }
         });
         conn.on('data',msg=>onReceivePacket(conn,session,msg,token));
         conn.on('error',e=>{
           console.error('受信接続エラー',e);
-          if(token===receiverToken)receiveError('通信エラーが発生しました。共有元の画面を確認して再試行してください。');
+          failOrRetry('端末間の通信エラー',e);
         });
         conn.on('close',()=>{
-          if(token===receiverToken&&receiving){
-            receiveError('送信元との接続が切れました。もう一度お試しください。');
-          }
+          if(token===receiverToken&&receiving)
+            failOrRetry('接続が途中で切れました',{type:'connection-closed'});
         });
       });
       peer.on('error',e=>{
         console.error('受信接続エラー',e);
-        if(token===receiverToken)receiveError('共有元に接続できません。QRが有効で、共有元の画面が開いているか確認してください。');
+        failOrRetry('接続仲介サーバーとのエラー',e);
       });
-    }catch(e){console.error(e);receiveError('この端末では受信を開始できませんでした。')}
+      peer.on('disconnected',()=>{
+        if(token===receiverToken&&receiving&&!receiverConn?.open)
+          failOrRetry('仲介サーバーとの接続が切れました',{type:'signaling-disconnected'});
+      });
+    }catch(e){console.error(e);failOrRetry('受信を開始できませんでした',e);}
   }
   async function applyReceived(play){
     if(!receivedArchive||projectBusy)return;
@@ -6315,7 +6378,14 @@ saveLogBtn.onclick = () => {
     catch(_){prompt('このリンクをコピーしてください',sourceUrl)}
   });
   $('bookShareClose').addEventListener('click',hide);
-  beginBtn.addEventListener('click',startReceiving);
+  externalFileBtn.addEventListener('click',()=>{
+    if(!sourceJson)return;
+    const blob=new Blob([sourceJson],{type:'application/json'});
+    const filename='ehon_share_'+new Date().toISOString().slice(0,16).replace(/[T:]/g,'-')+'.ehon';
+    downloadArchive(blob,filename);
+    status(sendStatus,'作品ファイルを保存しました。PairDropの一時ルームやクラウドストレージで相手へ送れます。');
+  });
+  beginBtn.addEventListener('click',()=>startReceiving(false));
   saveBtn.addEventListener('click',()=>{
     if(!receivedText)return;
     // User click is required for iOS Safari and Android download permissions.
@@ -6365,7 +6435,7 @@ saveLogBtn.onclick = () => {
       <li>見開きページの追加・削除</li>
       <li>ページ別の音声録音、試聴、削除・再録音、音声ファイル保存と読み聞かせでの再生。ページ下のタイムラインには「音声あり／なし／録音中」を表示します。</li>
       <li>「作品を保存」で絵・写真・録音・操作過程を1つの .ehon ファイルとして保存し、「作品を開く」で復元できます。</li>
-      <li>「QRで共有」でiPhoneやAndroidと作品を直接転送できます。受信者はQRを読み取り「受信を開始」→「端末に保存」または「開いて再生」を選びます。受信完了まで共有元のアプリを開いたままにしてください。</li>
+      <li>「QRで共有」でiPhoneやAndroidへ作品を送信できます。Wi-Fiと4G/5G間で接続できないときは中継通信も試行しますが、ネットワークによっては失敗します。その場合は「通信できない場合：作品ファイルを保存」から .ehon を保存し、PairDrop（外部サービス）やクラウドストレージで送ってください。</li>
       <li>「作品を再生」では表紙から制作過程と各ページの音声を自動再生します。</li>
       <li>全画面の読み聞かせ表示と、絵本全体のPDF保存</li>
     </ul>
