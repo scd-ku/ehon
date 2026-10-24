@@ -1265,23 +1265,31 @@ function decodeCanvasImage(url){
   });
 }
 async function prepareArchiveFrames(){
-  const unique=new Set(actionLog.map(e=>e.sceneFrame).filter(v=>typeof v==='string'&&v.startsWith('data:image/')));
-  // Decode lazily but in sequence to limit simultaneous memory demand.
+  // 古い形式のdrawEndの大きな画像は使わず、座標ログで描画する。
+  const unique=new Set(actionLog.filter(e=>e.type!=='drawEnd')
+    .map(e=>e.sceneFrame).filter(v=>typeof v==='string'&&v.startsWith('data:image/')));
+  const maxEdge=navigator.maxTouchPoints>1?640:900;
   for(const url of unique){
     if(sceneFrameCache.has(url))continue;
-    try{sceneFrameCache.set(url,await decodeCanvasImage(url))}
-    catch(e){console.warn('過程の画像を復元できません',e)}
+    try{
+      const img=await decodeCanvasImage(url);
+      const ratio=Math.min(1,maxEdge/Math.max(img.naturalWidth,img.naturalHeight));
+      const frame=document.createElement('canvas');
+      frame.width=Math.max(1,Math.round(img.naturalWidth*ratio));
+      frame.height=Math.max(1,Math.round(img.naturalHeight*ratio));
+      frame.getContext('2d').drawImage(img,0,0,frame.width,frame.height);
+      sceneFrameCache.set(url,frame);
+    }catch(e){console.warn('過程の画像を復元できません',e)}
   }
 }
 function restoreArchiveFrame(ev){
-  const img=sceneFrameCache.get(ev.sceneFrame);
-  if(!img||!img.complete||!img.naturalWidth)return false;
+  const frame=sceneFrameCache.get(ev.sceneFrame);
+  if(!frame||!(frame.width>0&&frame.height>0))return false;
   cancelStrokeCapture();
   pc.clearRect(0,0,W,H);
-  pc.drawImage(img,0,0,W,H);
+  pc.drawImage(frame,0,0,W,H);
   spreads[cur].objs=[];
-  sel=-1;
-  redrawObjs();
+  sel=-1;redrawObjs();
   return true;
 }
 
@@ -5616,7 +5624,7 @@ function replayEventMatchesPage(ev,index=cur){
 function applyLogEntryForPage(ev){
   // ページ追加・削除後も安定したIDで元のページに紐づける
   if(!replayEventMatchesPage(ev))return;
-  if(ev.sceneFrame && restoreArchiveFrame(ev))return;
+  if(ev.type!=='drawEnd'&&ev.sceneFrame&&restoreArchiveFrame(ev))return;
 
   switch (ev.type) {
     case 'drawStart':
@@ -5850,11 +5858,23 @@ function replayCurrentPageFromLog(speed = 1, fromSec = 0, toSec = null){
     drawTimeline();
 
     if (curT >= e){
-      // 終了
-      isPageLogPlaying = false;
-      pageLogReqId = null;
-      flushPendingStroke();                 // ★ 最後の線もオブジェクトにする
-      saveCur();                            // ★ 再生後の状態を保存しておく
+      isPageLogPlaying=false;
+      pageLogReqId=null;
+      flushPendingStroke();
+      // 読み聞かせが最後まで達したら、保存時点の完成状態に戻す。
+      // 再生中の状態を作品に保存すると削除済みの写真が復活してしまう。
+      const original=presentationOriginal?.find(item=>item.sp===sp);
+      if(original&&e>=maxT-0.02){
+        cancelStrokeCapture();
+        sp.paintOff=original.paintOff;sp.objs=original.objs;sp.tint=original.tint;
+        pc.clearRect(0,0,W,H);
+        if(sp.paintOff)pc.drawImage(sp.paintOff,0,0);
+        sel=-1;redrawObjs();
+        refreshFSIfLogMode();
+      }else if(!original){
+        // 編集用タイムラインでの再生は、従来どおり任意位置から続けられる。
+        saveCur();
+      }
       setTimelinePlayButtonPlaying(false);
       return;
     }
