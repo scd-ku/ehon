@@ -1113,6 +1113,8 @@ const actionLog = [];
 const logStartPerf   = performance.now();
 const logStartWallMs = Date.now();
 let importedLogTimeOffset=0;
+// iPadでの長時間描画時に操作ログが増えても、タイムライン全体の再描画は毎秒約8回に制限。
+let lastLiveTimelineRefreshMs=-Infinity;
 
 /** ページごとのローカル時間管理 */
 const pageLocalTime        = {}; // page -> そのページで経過した「ページ時間」（秒）
@@ -1214,7 +1216,10 @@ function logAction(type, detail = {}) {
           }
           // ★ 追加：三角を「現在のページ時間」に合わせる
           tlPlayhead = t;
-          drawTimeline();
+          if(type!=='drawMove'||nowPerf-lastLiveTimelineRefreshMs>=125){
+            lastLiveTimelineRefreshMs=nowPerf;
+            drawTimeline();
+          }
         }
       }
     }
