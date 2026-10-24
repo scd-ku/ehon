@@ -1130,6 +1130,12 @@ let autosaveReady=false,autosaveRevision=0,autosaveCommittedRevision=-1;
 let autosaveTimer=null,autosaveBusy=false,autosaveLastStarted=0;
 let autosaveWorkPromise=null;
 const autosaveImageBlobs=new WeakMap();
+const autosaveCanvasVersions=new WeakMap();
+function invalidateAutosaveCanvas(canvas){
+  if(!canvas)return;
+  autosaveCanvasVersions.set(canvas,(autosaveCanvasVersions.get(canvas)||0)+1);
+  autosaveImageBlobs.delete(canvas);
+}
 
 // ★ パフォーマンス時間と、開始時の「実時間」を両方持っておく
 const logStartPerf   = performance.now();
@@ -2991,7 +2997,7 @@ function eraseOnObjectsSegment(x1,y1,x2,y2,r){
       ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();
     }
     ctx.restore();
-    autosaveImageBlobs.delete(o.bmp); // 同じcanvasを書き換えたため自動保存用Blobも無効化
+    invalidateAutosaveCanvas(o.bmp); // 未完了のエンコード結果も再利用させない
   }
 }
 function eraseOnObjects(cx,cy,r){
@@ -6288,14 +6294,17 @@ async function autosaveWrite(snapshot){
 }
 function canvasToAutosaveBlob(canvas){
   if(!canvas)return Promise.resolve(null);
+  const version=autosaveCanvasVersions.get(canvas)||0;
   const cached=autosaveImageBlobs.get(canvas);
-  if(cached)return Promise.resolve(cached);
+  if(cached&&cached.version===version)return Promise.resolve(cached.blob);
   if(typeof canvas.toBlob!=='function')
     return Promise.reject(new Error('ブラウザが画像保存に対応していません'));
   return new Promise((resolve,reject)=>{
     canvas.toBlob(blob=>{
       if(!blob){reject(new Error('画像データの変換に失敗しました'));return}
-      autosaveImageBlobs.set(canvas,blob);
+      // 消しゴムがエンコード中に描画した場合、古い結果をキャッシュしない。
+      if((autosaveCanvasVersions.get(canvas)||0)===version)
+        autosaveImageBlobs.set(canvas,{blob,version});
       resolve(blob);
     },'image/webp',0.90);
   });
@@ -6416,7 +6425,8 @@ projectSaveBtn.disabled=true;
 projectLoadBtn.disabled=true;
 void initializeAutosave();
 setInterval(()=>{
-  if(autosaveReady&&autosaveRevision!==autosaveCommittedRevision&&!autosaveBusy)
+  if(autosaveReady&&autosaveRevision!==autosaveCommittedRevision&&!autosaveBusy&&
+      autosaveStatus?.dataset.state!=='error')
     void runAutosave();
 },12000);
 document.addEventListener('visibilitychange',()=>{
