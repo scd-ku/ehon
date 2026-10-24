@@ -5394,6 +5394,7 @@ const btnFront=imgMenu.querySelector('[data-act="front"]');
 const btnBack =imgMenu.querySelector('[data-act="back"]');
 const imgMenuSep=imgMenu.querySelector('.imgMenuSep');
 let menuTargetIndex=-1;
+let menuOpenedAt=0;
 
 function showImgMenu(x,y,menuMode){
   imgMenu.style.left=x+'px';
@@ -5412,6 +5413,7 @@ function showImgMenu(x,y,menuMode){
     btnPaste.style.display=clipboardTemplate?'block':'none';
     if(!clipboardTemplate) return;
   }
+  menuOpenedAt=Date.now();
   imgMenuDismissLayer.style.display='block';
   imgMenu.style.display='block';
 
@@ -5432,6 +5434,8 @@ function hideImgMenu(){
 }
 imgMenuDismissLayer.addEventListener('click',e=>{
   e.preventDefault();
+  // iOSでメニューを開いた長押しの指離しに伴う擬似clickでは閉じない。
+  if(Date.now()-menuOpenedAt<320)return;
   hideImgMenu();
 });
 function openCanvasContextMenu(clientX,clientY){
