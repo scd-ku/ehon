@@ -4161,43 +4161,49 @@ let fsFinalTimerId    = null;   // 「完成絵＋音声」自動再生の1秒�
 
 // fsCanvas と音声をミックスした MediaRecorder を用意
 function setupFsRecorder(){
-  if (!fsCanvas.captureStream) {
-    console.warn('canvas.captureStream に未対応のブラウザです');
+  // 動画記録はオプション。非対応でも読み聞かせと音声再生を続行する。
+  if(!fsCanvas.captureStream || typeof MediaRecorder==='undefined'){
+    console.warn('動画録画に対応していないため、読み聞かせ再生のみ実行します');
     return null;
   }
-
-  const canvasStream = fsCanvas.captureStream(30); // 30fps
-
-  // Web Audio で音声ミックス
-  if (!fsAudioCtx) {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    fsAudioCtx = new AC();
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC)return null;
+  let stream=null;
+  try{
+    const candidates=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus',
+                      'video/webm','video/mp4'];
+    let mime='';
+    for(const type of candidates){
+      try{if(MediaRecorder.isTypeSupported(type)){mime=type;break}}catch(_){}
+    }
+    if(!mime)return null;
+    stream=fsCanvas.captureStream(30);
+    if(!fsAudioCtx)fsAudioCtx=new AC();
+    fsAudioDest=fsAudioCtx.createMediaStreamDestination();
+    const mixed=new MediaStream();
+    stream.getVideoTracks().forEach(t=>mixed.addTrack(t));
+    fsAudioDest.stream.getAudioTracks().forEach(t=>mixed.addTrack(t));
+    const recorder=new MediaRecorder(mixed,{mimeType:mime});
+    fsRecordedChunks=[];
+    fsMediaRecorder=recorder;
+    recorder.ondataavailable=e=>{
+      if(e.data&&e.data.size>0)fsRecordedChunks.push(e.data);
+    };
+    recorder.onstop=()=>{
+      if(fsRecordedChunks.length){
+        fsLastVideoBlob=new Blob(fsRecordedChunks,{type:recorder.mimeType||mime});
+        if(fsSaveBtn)fsSaveBtn.disabled=false;
+        if(fsPostBtn)fsPostBtn.disabled=false;
+      }
+    };
+    recorder.onerror=e=>console.warn('動画記録中のエラー',e);
+    return recorder;
+  }catch(e){
+    console.warn('動画録画の開始準備に失敗。読み聞かせは続けます',e);
+    fsMediaRecorder=null;fsAudioDest=null;
+    stream?.getTracks().forEach(t=>t.stop());
+    return null;
   }
-  fsAudioDest = fsAudioCtx.createMediaStreamDestination();
-
-  const mixed = new MediaStream();
-  canvasStream.getVideoTracks().forEach(tr => mixed.addTrack(tr));
-  fsAudioDest.stream.getAudioTracks().forEach(tr => mixed.addTrack(tr));
-
-  fsRecordedChunks = [];
-  fsMediaRecorder = new MediaRecorder(mixed, { mimeType: 'video/webm' });
-
-  fsMediaRecorder.ondataavailable = (e)=>{
-    if(e.data && e.data.size > 0){
-      fsRecordedChunks.push(e.data);
-    }
-  };
-
-  fsMediaRecorder.onstop = ()=>{
-    if(fsRecordedChunks.length > 0){
-      fsLastVideoBlob = new Blob(fsRecordedChunks, { type:'video/webm' });
-      // 「保存」「投稿」ボタンを有効化
-      if (fsSaveBtn) fsSaveBtn.disabled = false;
-      if (fsPostBtn) fsPostBtn.disabled = false;
-    }
-  };
-
-  return fsMediaRecorder;
 }
 
 // ★ ページ音声を Web Audio に流し込み、録画音声としても利用
@@ -4666,7 +4672,7 @@ if (fsSaveBtn){
     const url = URL.createObjectURL(fsLastVideoBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'ehon_narration.webm';
+    a.download = fsLastVideoBlob.type.startsWith('video/mp4')?'ehon_narration.mp4':'ehon_narration.webm';
     a.click();
     setTimeout(()=>URL.revokeObjectURL(url), 10000);
   };
@@ -4719,7 +4725,7 @@ function startAutoPlay(){
 
   // ── 録画の準備 ──
   if (!fsMediaRecorder){
-    setupFsRecorder?.();
+    try{setupFsRecorder?.()}catch(e){console.warn('動画録画は省略',e)}
   }
   if (fsAudioCtx && fsAudioCtx.state === 'suspended'){
     fsAudioCtx.resume().catch(()=>{});
@@ -4808,7 +4814,7 @@ function restorePresentation(){
     if(fs.classList.contains('show'))drawFS();
   }finally{presentationRestoreBusy=false}
 }
-function openFS(){
+function openFS({skipInitialPlayback=false}={}){
   hideDrawPanel();
   backupPresentation();
 
@@ -4826,7 +4832,7 @@ function openFS(){
   fsGoToPage(0);
 
   updateFsModeButtons();
-  playForCurrentFSPage();
+  if(!skipInitialPlayback)playForCurrentFSPage();
   logAction('fsOpen',{page:cur+1, mode:fsMode});
 }
 
@@ -5744,7 +5750,7 @@ projectReplayBtn.onclick=async()=>{
   try{
     await prepareArchiveFrames();
     fsMode='log';
-    openFS();
+    openFS({skipInitialPlayback:true});
     updateFsModeButtons();
     startAutoPlay();
     setProjectStatus('制作過程＋ページ音声を再生中');
