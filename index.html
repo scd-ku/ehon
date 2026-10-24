@@ -1230,18 +1230,20 @@ function logAction(type, detail = {}) {
 /* 編集の節目を圧縮画像で記録する。途中のマウス移動は既存ログから連続描画する。
    古いイベントログで再現できなかったUndo・消去・重ね順変更も復元可能。 */
 const SCENE_CAPTURE_EVENTS=new Set([
-  'drawEnd','undo','explodeClear','stampPlace','cameraCut','cameraCapture','imageLoad',
+  'undo','explodeClear','stampPlace','cameraCut','cameraCapture','imageLoad',
   'imageOp','imageDup','imageDelete','imageOrder','imagePaste'
 ]);
 let replayingArchivedVisuals=false;
 const sceneFrameCache=new Map();
 function captureSceneFrame(){
   const sp=spreads[cur];
+  const ratio=Math.min(1,720/Math.max(W,H));
   const canvas=document.createElement('canvas');
-  canvas.width=W;canvas.height=H;
+  canvas.width=Math.max(1,Math.round(W*ratio));
+  canvas.height=Math.max(1,Math.round(H*ratio));
   const ctx=canvas.getContext('2d');
-  ctx.save();
-  clipToPageArea(ctx,sp.type||'normal');
+  ctx.save();ctx.scale(ratio,ratio);
+  ctx.save();clipToPageArea(ctx,sp.type||'normal');
   for(const o of sp.objs){
     ctx.save();
     ctx.translate(o.cx,o.cy);ctx.rotate(o.theta);ctx.scale(o.scale,o.scale);
@@ -1250,8 +1252,8 @@ function captureSceneFrame(){
   }
   ctx.restore();
   ctx.drawImage(paintCvs,0,0);
-  // WebP keeps transparency and stays compact on contemporary browsers.
-  return canvas.toDataURL('image/webp',0.82);
+  ctx.restore();
+  return canvas.toDataURL('image/webp',0.67);
 }
 function decodeCanvasImage(url){
   return new Promise((resolve,reject)=>{
@@ -2149,11 +2151,13 @@ function cloneSpread(sp){
 }
 
 function pushHistory(sp){
-  const stack = historyMap.get(sp);
-  if (!stack) return;
-  const snap = cloneSpread(sp);
-  stack.push(snap);
-  if (stack.length > 20) stack.shift(); // 最大20ステップ
+  const stack=historyMap.get(sp);
+  if(!stack)return;
+  const mobile=/iPad|iPhone|iPod/.test(navigator.userAgent)||
+    (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  const limit=mobile?8:20;
+  while(stack.length>=limit)stack.shift();
+  stack.push(cloneSpread(sp));
 }
 
 function pushHistoryForCurrentSpread(){
@@ -3881,8 +3885,11 @@ function drawCamFrameToComposite(){
     viewCtx.drawImage(camComposite,0,0,camView.width,camView.height);
   }
 }
+let lastCamRenderMs=0;
 (function renderLoop(){
-  if(camModal.classList.contains('show')){
+  if(camModal.classList.contains('show')&&
+    performance.now()-lastCamRenderMs >= (navigator.maxTouchPoints>1?75:40)){
+    lastCamRenderMs=performance.now();
     if(camSourceMode==='image'){
       if(camImageEl)drawCamFrameToComposite();
     }else if(camStream){
@@ -4057,6 +4064,8 @@ function takeCamSnapshot(){
   window.setTimeout(()=>{
     try{
       if(!camModal.classList.contains('show'))return;
+      // 先にGPUカメラ映像を停止。iPadでの動画処理とUndo複製の競合をなくす。
+      stopCam();
       pushHistoryForCurrentSpread();
       const obj=createObjFromImage(photo,W/2,H/2);
       addStampFromImage(obj.bmp);
@@ -4766,158 +4775,15 @@ function playCurrentPageAudio(){
 
 function fitFS(){ fsCanvas.width=window.innerWidth; fsCanvas.height=window.innerHeight; }
 
-/**
- * 指定ページの「ページ時間 startSec〜endSec のあいだ」だけを
- * ログから再現した静止画キャンバスを返す。
- * ※実際のページ状態は最後に元に戻す。
- */
- function buildSnapshotFromLogRange(pageIndex, startSec, endSec){
-  const pageNo = pageIndex + 1;
-  const sp = spreads[pageIndex];
-  if (!sp) return null;
-
-  // 範囲がおかしければ何もしない
-  if (endSec != null && endSec <= startSec) return null;
-
-  // 元の spread 内容をバックアップ
-  const backupSpread = cloneSpread(sp);
-
-  // 現在の描画レイヤ（手描き・画像）のビットマップも退避
-  const backupPaint = document.createElement('canvas');
-  backupPaint.width  = W;
-  backupPaint.height = H;
-  backupPaint.getContext('2d').drawImage(paintCvs, 0, 0);
-
-  const backupObj = document.createElement('canvas');
-  backupObj.width  = W;
-  backupObj.height = H;
-  backupObj.getContext('2d').drawImage(objCvs, 0, 0);
-
-  const oldCur = cur;
-  cur = pageIndex;
-
-  // いったん真っ白の状態から再構成
-  pc.clearRect(0, 0, W, H);
-  oc.clearRect(0, 0, W, H);
-  sp.paintOff = null;
-  sp.objs     = [];
-
-  const s = (startSec != null ? startSec : 0);
-  let   e = endSec;
-
-  // endSec が未指定なら、そのページの最後のログまでを終点にする
-  if (e == null){
-    let maxT = 0;
-    for (const ev of actionLog){
-      if (replayEventMatchesPage(ev,pageIndex) && typeof ev.page_time_sec === 'number'){
-        if (ev.page_time_sec > maxT) maxT = ev.page_time_sec;
-      }
-    }
-    e = maxT;
-  }
-
-  // ★ スナップショットモード ON
-  isRebuildingFromLogForSnapshot = true;
-
-  for (const ev of actionLog){
-    if (!replayEventMatchesPage(ev,pageIndex)) continue;
-    const t = (typeof ev.page_time_sec === 'number')
-      ? ev.page_time_sec
-      : (typeof ev.time_sec === 'number' ? ev.time_sec : 0);
-
-    if (t < s || t > e) continue;
-
-    applyLogEntryForPage(ev);
-  }
-
-  // ★ スナップショットモード OFF
-  flushPendingStroke();
-  isRebuildingFromLogForSnapshot = false;
-
-  // ---- ここで「startSec〜endSec のあいだに描かれたページ」が
-  //      paintCvs / spreads[pageIndex].objs に入っているので、
-  //      それを 1枚のキャンバスにまとめる ----
-
-  const snap = document.createElement('canvas');
-  snap.width  = W;
-  snap.height = H;
-  const ctx = snap.getContext('2d');
-
-  // 背景（本の形）
-  drawBGForType(sp.type || 'normal');
-  ctx.drawImage(bgCvs, 0, 0);
-
-  // 背景色（ティント）
-  const tint = sp.tint || {};
-  if (tint.alpha > 0){
-    const margin = 42, top = 36, bottom = H - 40;
-    ctx.save();
-    ctx.globalAlpha = Math.max(0, Math.min(1, tint.alpha));
-    ctx.fillStyle   = tint.color || '#ffffff';
-
-    if (sp.type === 'cover' || sp.type === 'back') {
-      const availH     = bottom - top;
-      const squareSize = Math.min(availH, W - 2 * margin);
-      const x = (W - squareSize) / 2;
-      const y = top + (availH - squareSize) / 2;
-      rr(ctx, x + 6, y + 6, squareSize - 12, squareSize - 12, 12);
-      ctx.fill();
-    } else {
-      const leftX0 = margin, leftX1 = W/2 - 4, rightX0 = W/2 + 4, rightX1 = W - margin;
-      pageShapePath(ctx, leftX0, leftX1, top, bottom);  ctx.fill();
-      pageShapePath(ctx, rightX0, rightX1, top, bottom); ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  // 貼り付け画像（★ ページからはみ出した分は見切れさせる）
-  ctx.save();
-  clipToPageArea(ctx, sp.type || 'normal');
-  sp.objs.forEach(o=>{
-    ctx.save();
-    ctx.translate(o.cx, o.cy);
-    ctx.rotate(o.theta);
-    ctx.scale(o.scale, o.scale);
-    ctx.drawImage(o.bmp, -o.w/2, -o.h/2);
-    ctx.restore();
-  });
-  ctx.restore();
-
-  // 手描きレイヤ
-  ctx.drawImage(paintCvs, 0, 0);
-
-  // ---- 元のページ状態を完全に復元 ----
-  spreads[pageIndex].paintOff = backupSpread.paintOff;
-  spreads[pageIndex].objs     = backupSpread.objs;
-  spreads[pageIndex].tint     = backupSpread.tint;
-
-  pc.clearRect(0, 0, W, H);
-  oc.clearRect(0, 0, W, H);
-  pc.drawImage(backupPaint, 0, 0);
-  oc.drawImage(backupObj,   0, 0);
-  drawBG();
-
-  cur = oldCur;
-
-  return snap;
-}
-
+/* 完成絵は最終編集状態のみ使用。旧ログ範囲スナップショットは編集中のオブジェクトに
+   副作用があったため廃止。描画過程の再生は replayCurrentPageFromLog で行う。 */
 function drawFS(){
   // 背景を黒でクリア
   fsCtx.fillStyle = '#000';
   fsCtx.fillRect(0, 0, fsCanvas.width, fsCanvas.height);
 
+  // 完成絵には既存の最終ページ内容だけを使用。削除済み写真を再構成しない。
   let pageCanvas = null;
-
-  // ★ 「完成絵＋音声」モードのときだけ、
-  //    タイムラインの開始〜終了範囲から静止画を作成
-  const hasRange = (tlMaxTime > 0 && tlViewEnd > tlViewStart);
-  if (fsMode === 'final' && hasRange){
-    pageCanvas = buildSnapshotFromLogRange(cur, tlViewStart, tlViewEnd);
-  }
-
-  // それ以外（おえかき再生モードや範囲なし）は、
-  // 現在のページ状態そのままを表示
   if (!pageCanvas){
     const comp = document.createElement('canvas');
     comp.width  = W;
@@ -6083,7 +5949,11 @@ function setProjectBusy(busy){
   projectLoadBtn.disabled=busy;
   projectReplayBtn.disabled=busy;
 }
-function canvasArchiveData(canvas){return canvas?canvas.toDataURL('image/png'):null}
+function canvasArchiveData(canvas){
+  if(!canvas)return null;
+  const data=canvas.toDataURL('image/webp',0.88);
+  return data.startsWith('data:image/webp')?data:canvas.toDataURL('image/png');
+}
 function blobArchiveData(blob){
   return new Promise((resolve,reject)=>{
     if(!blob)return resolve(null);
