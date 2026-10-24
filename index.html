@@ -3944,34 +3944,142 @@ function createStickerFromLasso(){
   closeCamModal();
 }
 
-/* なげなわ入力 */
+/* タップはフレーム撮影、ドラッグはなげなわで切り抜き */
+const CAM_LASSO_THRESHOLD=11; // CSS px
+let camPointerPending=null,camSnapshotBusy=false;
+let shutterAudioCtx=null;
+function playCameraShutter(){
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC)return;
+    if(!shutterAudioCtx||shutterAudioCtx.state==='closed')shutterAudioCtx=new AC();
+    const ctx=shutterAudioCtx;
+    if(ctx.state==='suspended')ctx.resume().catch(()=>{});
+    const rate=ctx.sampleRate,frames=Math.max(1,Math.round(rate*.14));
+    const buffer=ctx.createBuffer(1,frames,rate),samples=buffer.getChannelData(0);
+    // 機械式シャッターの「カッ」「シャッ」を短いノイズで作る
+    for(let i=0;i<frames;i++){
+      const t=i/rate,dt=t-.042;
+      const attack=t<.014?.95*Math.exp(-t*190):0;
+      const release=dt>=0?.52*Math.exp(-dt*42):0;
+      samples[i]=(Math.random()*2-1)*(attack+release);
+    }
+    const source=ctx.createBufferSource(),gain=ctx.createGain();
+    gain.gain.value=.32;
+    source.buffer=buffer;source.connect(gain);gain.connect(ctx.destination);
+    source.start();
+    source.onended=()=>{source.disconnect();gain.disconnect()};
+  }catch(e){console.warn('シャッター音を再生できません',e)}
+}
+function flashCamPreview(){
+  camFlash.classList.remove('active');
+  void camFlash.offsetWidth;
+  camFlash.classList.add('active');
+}
+function copyDisplayedCameraFrame(){
+  const src=getCamSource();
+  if(!src)throw new Error('カメラ映像の準備ができていません');
+  const cw=camComposite.width,ch=camComposite.height;
+  if(!cw||!ch)throw new Error('カメラ画面のサイズを取得できません');
+  // 描画プレビューに設定済みの明るさ・色合い・トゥーンをそのまま撮影
+  drawCamFrameToComposite();
+  // 映像の周囲の黒いレターボックスを除外する
+  const fit=Math.min(cw/src.w,ch/src.h);
+  const width=Math.max(1,Math.round(src.w*fit));
+  const height=Math.max(1,Math.round(src.h*fit));
+  const sx=Math.round((cw-width)/2),sy=Math.round((ch-height)/2);
+  const photo=document.createElement('canvas');
+  photo.width=width;photo.height=height;
+  photo.getContext('2d').drawImage(camComposite,sx,sy,width,height,0,0,width,height);
+  return photo;
+}
+function takeCamSnapshot(){
+  if(camSnapshotBusy||!camModal.classList.contains('show'))return;
+  let photo;
+  try{photo=copyDisplayedCameraFrame()}
+  catch(e){
+    setCamLiveStatus(e.message||'映像の取得に失敗しました',true);
+    return;
+  }
+  camSnapshotBusy=true;
+  // iOSでの音声再生制限に合わせタップ処理の中で音を開始
+  playCameraShutter();
+  flashCamPreview();
+  window.setTimeout(()=>{
+    try{
+      if(!camModal.classList.contains('show'))return;
+      pushHistoryForCurrentSpread();
+      const obj=createObjFromImage(photo,W/2,H/2);
+      addStampFromImage(obj.bmp);
+      setMode('edit');redrawObjs();
+      logAction('cameraCapture',{
+        page:cur+1,src:camSourceMode,w:photo.width,h:photo.height,
+        cx:+obj.cx.toFixed(1),cy:+obj.cy.toFixed(1),
+        size:+(Math.max(obj.w,obj.h)*obj.scale).toFixed(2),
+        stampIndex:stamps.length-1
+      });
+      closeCamModal();
+    }catch(e){
+      console.error('静止画の貼り付けエラー',e);
+      alert('写真をページに配置できませんでした：'+(e.message||e));
+    }finally{camSnapshotBusy=false}
+  },320);
+}
 function olDown(e){
-  if(!getCamSource()) return;
+  if(camSnapshotBusy)return;
+  if(e.touches&&e.touches.length!==1)return;
+  if(e.button!=null&&e.button!==0)return;
+  if(!getCamSource())return;
   e.preventDefault();
-  isLassoDrawing=true;
-  lassoPath=[camPos(e)];
+  camPointerPending={start:camPos(e)};
+  isLassoDrawing=false;lassoPath=[];
   drawLassoOverlay();
 }
 function olMove(e){
-  if(!isLassoDrawing) return;
+  if(!camPointerPending)return;
+  if(e.touches&&e.touches.length!==1){olCancel(e);return;}
   e.preventDefault();
-  const p=camPos(e);
-  const last=lassoPath[lassoPath.length-1];
-  if(!last || Math.hypot(p.x-last.x,p.y-last.y)>2){
-    lassoPath.push(p);
+  const p=camPos(e),start=camPointerPending.start;
+  const rect=camOverlay.getBoundingClientRect();
+  const threshold=CAM_LASSO_THRESHOLD*camOverlay.width/Math.max(1,rect.width);
+  if(!isLassoDrawing){
+    if(Math.hypot(p.x-start.x,p.y-start.y)<threshold)return;
+    isLassoDrawing=true;
+    lassoPath=[start,p];
     drawLassoOverlay();
+    return;
+  }
+  const last=lassoPath[lassoPath.length-1];
+  if(!last||Math.hypot(p.x-last.x,p.y-last.y)>2){
+    lassoPath.push(p);drawLassoOverlay();
   }
 }
 function olUp(e){
-  if(!isLassoDrawing) return;
+  if(!camPointerPending)return;
   e.preventDefault();
-  isLassoDrawing=false;
-  drawLassoOverlay();
-  createStickerFromLasso();
+  const wasLasso=isLassoDrawing;
+  if(wasLasso){
+    const p=camPos(e),last=lassoPath[lassoPath.length-1];
+    if(!last||Math.hypot(p.x-last.x,p.y-last.y)>2)lassoPath.push(p);
+  }
+  camPointerPending=null;isLassoDrawing=false;
+  if(wasLasso){
+    drawLassoOverlay();
+    createStickerFromLasso();
+  }else{
+    lassoPath=[];drawLassoOverlay();
+    takeCamSnapshot();
+  }
+}
+function olCancel(e){
+  if(!camPointerPending)return;
+  if(e.cancelable)e.preventDefault();
+  camPointerPending=null;isLassoDrawing=false;lassoPath=[];drawLassoOverlay();
 }
 ['mousedown','touchstart'].forEach(ev=>camOverlay.addEventListener(ev,olDown,{passive:false}));
 ['mousemove','touchmove'].forEach(ev=>camOverlay.addEventListener(ev,olMove,{passive:false}));
-['mouseup','mouseleave','touchend','touchcancel'].forEach(ev=>camOverlay.addEventListener(ev,olUp,{passive:false}));
+['mouseup','touchend'].forEach(ev=>camOverlay.addEventListener(ev,olUp,{passive:false}));
+['mouseleave','touchcancel'].forEach(ev=>camOverlay.addEventListener(ev,olCancel,{passive:false}));
 
 /* カメラ起動/停止 (iOS Safariでも必ずvideo.play()を実行) */
 let camStartToken=0,camPlayingAttempt=false,camAutoRetryAt=0;
@@ -4168,8 +4276,9 @@ function closeCamModal(){
   camModal.classList.remove('show');
   stopCam();
   clearCamImage();
-  lassoPath=[]; isLassoDrawing=false;
-  try{ drawLassoOverlay(); }catch(_){}
+  lassoPath=[];isLassoDrawing=false;camPointerPending=null;camSnapshotBusy=false;
+  camFlash.classList.remove('active');
+  try{drawLassoOverlay()}catch(_){}
 }
 function loadLocalImageForLasso(file){
   if(!file || !/^image\//.test(file.type||'')){
@@ -6639,10 +6748,10 @@ saveLogBtn.onclick = () => {
 
     <h3>基本の使い方</h3>
     <ol>
-      <li>矢印ツールでオブジェクトを選び、手のアイコンでキャンバスを移動します。Macでは右クリック／２本指タップ、iPadでは画像や線を約0.5秒長押しすると、複製・削除・前後移動のメニューを開けます。</li>
+      <li>矢印ツールでオブジェクトを選び、手のアイコンでキャンバスを移動します。Macでは右クリック／２本指タップ、iPadでは画像や線を約0.5秒長押しすると編集メニューを開けます。メニュー以外を１回タップすれば閉じます。</li>
       <li>ペンを選び、パレット、またはツールバーに表示される現在の色と太さの丸を押して、ブラシ・色・太さを設定して描きます。</li>
       <li>画像ボタンから写真を読み込み、画像編集ツールで位置・角度・大きさを整えます。</li>
-      <li>必要に応じてカメラ／なげなわ切り抜きやスタンプを使います。iPad・iPhoneで映像が止まる場合は、カメラへのアクセスを許可し、画面上部の「▶ 映像を再開」を押してください。</li>
+      <li>カメラ映像を１回タップするとシャッター音・フラッシュとともに写真としてページに貼り付けられます。指やマウスでドラッグすれば、従来どおりなげなわで部分的に切り抜けます。映像が止まった場合は「▶ 映像を再開」を押してください。</li>
       <li>ページ追加ボタンで見開きを増やし、ページごとにマイクから録音し、停止ボタンで確定します。録音済みなら同じマイクボタンで再録音、ゴミ箱ボタンで音声だけを削除できます。</li>
       <li>読み聞かせモードで「前」「次」を押すと、そのページの録音が再生されます。「♪ 音声再生」で聞き直すこともできます。</li>
       <li>作品を後から編集・再生するには「作品を保存」→ .ehon ファイルを保管 →「作品を開く」→「作品を再生」の順に操作します。PDFは静止画像だけを保存する形式です。</li>
