@@ -6118,7 +6118,9 @@ async function applyBookArchiveData(data){
   spreads=unpacked.pages;
   stamps.length=0;stamps.push(...unpacked.stamps);
   currentStampIndex=Math.min(stamps.length-1,Math.max(-1,Number(data.currentStampIndex)||0));
-  actionLog.splice(0,actionLog.length,...data.events);
+  // iPad Safariでは巨大なevents配列を可変長引数へ展開すると上限超過になる。
+  actionLog.length=0;
+  for(const ev of data.events)actionLog.push(ev);
   // 数万件の描画イベントでもスプレッド引数の上限で読み込みが失敗しないようにする。
   let maxSavedTime=0;
   for(const ev of data.events){
