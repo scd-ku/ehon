@@ -2411,11 +2411,14 @@ if(mSelect){
 }
 
 let penColor='#000000', penSize=10;
+// パレットでペン色を変更した後、次にページに触れたときだけペンに戻す。
+let penPendingAfterPaletteColor=false;
 function setSwatchColor(col){ pickedColorSwatch.style.background=col; }
 penColorInput.oninput=(e)=>{
   penColor=e.target.value;
   setErase(false);
   setSwatchColor(penColor);
+  penPendingAfterPaletteColor=true;
 };
 const penSizeNum = document.getElementById('penSizeNum');
 /* ★ 色ボタン（スウォッチ）の円の直径で線の太さを表す */
@@ -2447,6 +2450,7 @@ headerColorInput.addEventListener('input',(e)=>{
   penColor=col;
   penColorInput.value=col;
   setSwatchColor(col);
+  penPendingAfterPaletteColor=true;
 });
 function hideDrawPanel(){
   drawPanel.classList.remove('open');
@@ -3334,6 +3338,17 @@ function canvasDown(e){
   if(isTouch && (isPinching || (e.touches && e.touches.length>1)))return;
   const button=isTouch?0:e.button;
   if(button===2) return;
+
+  // パレットで色を変えた後、最初のタップ／ドラッグをそのままペン描画にする。
+  // その間に画像選択やスタンプ等へ明示的に切り替えた場合は、選択を尊重する。
+  if(penPendingAfterPaletteColor){
+    penPendingAfterPaletteColor=false;
+    if(mode==='none'){
+      erasing=false;isEyedropperMode=false;isPanMode=false;
+      setMode('draw');
+      hideDrawPanel();
+    }
+  }
 
   // ★ 再生中にキャンバスを触ったら、いったん再生停止
   if (isPageLogPlaying){
