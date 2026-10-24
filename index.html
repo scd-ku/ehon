@@ -6069,8 +6069,9 @@ saveLogBtn.onclick = () => {
       receiveStatus.classList.add('book-share-success');
       status(receiveStatus,'受信完了！ '+data.pages.length+'ページを受け取りました。「端末に保存」しておくと、後日も読み聞かせできます。');
       try{receiverConn?.send({t:'complete'})}catch(_){}
-      // Connection no longer required once all data have been reconstructed.
-      stopReceiver();
+      // 最終確認パケットの送信後に切断し、送信側の完了表示を確実にする
+      const completedToken=receiverToken;
+      setTimeout(()=>{if(receiverToken===completedToken)stopReceiver()},500);
     }catch(e){
       receiveError('作品の検証に失敗しました。もう一度受信してください。');
     }
@@ -6166,7 +6167,11 @@ saveLogBtn.onclick = () => {
     try{
       await applyBookArchiveData(receivedArchive);
       hide();
-      if(play)projectReplayBtn.click();
+      setProjectBusy(false);
+      if(play){
+        // projectReplayBtn のハンドラーは projectBusy 中には実行できない
+        projectReplayBtn.click();
+      }
     }catch(e){
       console.error('受信作品の読込失敗',e);
       status(receiveStatus,'この作品を開けませんでした：'+e.message);
